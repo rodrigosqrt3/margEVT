@@ -137,7 +137,6 @@ pp_grad <- function(par, dm, y, threshold,
                                    -(threshold - mu_t[valid & gumbel]) / sig_t[valid & gumbel]))
   tau[valid & !gumbel] <- z_u[valid & !gumbel]^(-1 / xi_t[valid & !gumbel])
 
-  # ── Lambda gradients ────────────────────────────────────────────────────
   dL_dmu <- numeric(n)
   dL_dmu[valid &  gumbel] <- tau[valid &  gumbel] / sig_t[valid &  gumbel]
   dL_dmu[valid & !gumbel] <- z_u[valid & !gumbel]^(
@@ -162,7 +161,6 @@ pp_grad <- function(par, dm, y, threshold,
   }
   g_xi <- g_xi + dL_dxi / obs_per_year
 
-  # ── log_f gradients (exceedances only) ───────────────────────────────────
   if (length(exc_idx) > 0L) {
     y_e   <- y[exc_idx]
     mu_e  <- mu_t[exc_idx]
@@ -195,7 +193,6 @@ pp_grad <- function(par, dm, y, threshold,
   grad_sigma <- as.numeric(t(X_sigma) %*% g_lsig)
   grad_xi    <- as.numeric(t(X_xi)    %*% g_xi)
 
-  # ── Penalty gradients ─────────────────────────────────────────────────────
   lam <- function(k) if (length(lambda) > 1L) lambda[k] else lambda
   alp <- function(k) if (length(alpha)  > 1L) alpha[k]  else alpha
 

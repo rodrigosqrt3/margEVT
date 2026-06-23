@@ -12,7 +12,7 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# S3 constructor — internal
+# S3 constructor - internal
 # -----------------------------------------------------------------------------
 new_nhpp_fit <- function(par, dm, threshold, nllh_pen, nllh_raw,
                          lambda, alpha, penalty, penalize_shape,
@@ -38,7 +38,7 @@ new_nhpp_fit <- function(par, dm, threshold, nllh_pen, nllh_raw,
 }
 
 # -----------------------------------------------------------------------------
-# .warmstart() — coordinate descent for a better starting point
+# .warmstart() - coordinate descent for a better starting point
 # -----------------------------------------------------------------------------
 .warmstart <- function(init, dm, y, threshold, lambda, alpha,
                        penalize_shape, n_passes = 5L, step = 0.01,
@@ -83,7 +83,7 @@ new_nhpp_fit <- function(par, dm, threshold, nllh_pen, nllh_raw,
 }
 
 # -----------------------------------------------------------------------------
-# .fit_at_lambda() — internal workhorse
+# .fit_at_lambda() - internal workhorse
 # Fits the model at a fixed lambda. Called by fit_nhpp() and
 # .select_lambda_bic(). Never called directly by the user.
 # -----------------------------------------------------------------------------
@@ -144,7 +144,7 @@ new_nhpp_fit <- function(par, dm, threshold, nllh_pen, nllh_raw,
 }
 
 # -----------------------------------------------------------------------------
-# fit_nhpp() — main user-facing function
+# fit_nhpp() - main user-facing function
 # -----------------------------------------------------------------------------
 
 #' Fit a non-homogeneous point process model for extremes
@@ -199,7 +199,6 @@ fit_nhpp <- function(df, threshold,
                      calc_hessian   = FALSE,
                      verbose        = TRUE) {
 
-  # ── Validate inputs ────────────────────────────────────────────────────────
   if (!is.data.frame(df))
     stop("fit_nhpp: `df` must be a data frame.")
   if (!"y" %in% names(df))
@@ -212,17 +211,15 @@ fit_nhpp <- function(df, threshold,
   y     <- df$y
   n_exc <- sum(y > threshold, na.rm = TRUE)
   if (n_exc < 5L && verbose)
-    warning("fit_nhpp: fewer than 5 exceedances — estimates may be unreliable.")
+    warning("fit_nhpp: fewer than 5 exceedances - estimates may be unreliable.")
 
-  # ── Resolve alpha from penalty type ───────────────────────────────────────
   alpha <- switch(penalty,
-                  none  = 0.5,   # irrelevant, lambda will be 0
+                  none  = 0.5,
                   lasso = 1,
                   ridge = 0,
                   elnet = alpha
   )
 
-  # ── Resolve lambda from penalty type ──────────────────────────────────────
   if (penalty == "none") {
     lambda_resolved <- 0
   } else if (is.numeric(lambda)) {
@@ -233,13 +230,11 @@ fit_nhpp <- function(df, threshold,
     stop("fit_nhpp: `lambda` must be a positive numeric value or \"bic\".")
   }
 
-  # ── Build design matrices ──────────────────────────────────────────────────
   dm    <- build_design_matrices(df, loc_vars, scale_vars, shape_vars, free_vars)
   p_mu  <- ncol(dm$X_mu)
   p_sig <- ncol(dm$X_sigma)
   p_xi  <- ncol(dm$X_xi)
 
-  # ── Initial parameter vector ───────────────────────────────────────────────
   y_exc <- y[y > threshold]
   init  <- rep(0, p_mu + p_sig + p_xi)
   if (length(y_exc) > 0L) {
@@ -252,7 +247,6 @@ fit_nhpp <- function(df, threshold,
     paste0("xi.",    colnames(dm$X_xi))
   )
 
-  # ── BIC grid search if needed ──────────────────────────────────────────────
   if (is.null(lambda_resolved)) {
     if (verbose)
       message("fit_nhpp: running BIC lambda selection (penalty = '",
@@ -272,12 +266,10 @@ fit_nhpp <- function(df, threshold,
       message(sprintf("fit_nhpp: selected lambda = %.5f", mean(lambda_resolved)))
   }
 
-  # ── Warm start ────────────────────────────────────────────────────────────
   if (any(lambda_resolved > 0))
     init <- .warmstart(init, dm, y, threshold, lambda_resolved, alpha,
                        penalize_shape, obs_per_year = obs_per_year)
 
-  # ── Fit at resolved lambda ─────────────────────────────────────────────────
   res <- .fit_at_lambda(dm, y, threshold,
                         lambda       = lambda_resolved,
                         alpha        = alpha,
@@ -293,7 +285,6 @@ fit_nhpp <- function(df, threshold,
   par_hat <- res$par
   names(par_hat) <- names(init)
 
-  # ── Fitted values ──────────────────────────────────────────────────────────
   beta_mu    <- par_hat[seq_len(p_mu)]
   beta_sigma <- par_hat[p_mu + seq_len(p_sig)]
   beta_xi    <- par_hat[p_mu + p_sig + seq_len(p_xi)]
@@ -327,7 +318,7 @@ fit_nhpp <- function(df, threshold,
 
 #' @export
 print.nhpp_fit <- function(x, ...) {
-  cat("── nhpp_fit ──────────────────────────────────────\n")
+  cat("-- nhpp_fit --------------------------------------\n")
   cat(sprintf("  Threshold    : %.4g\n",  x$threshold))
   cat(sprintf("  Penalty      : %s\n",    x$penalty))
   cat(sprintf("  Lambda       : %.5g\n",  mean(x$lambda)))

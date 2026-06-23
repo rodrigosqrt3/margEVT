@@ -45,7 +45,7 @@
     if (penalize_shape) p_mu + p_sig + dm$idx_pen_xi else integer(0L)
   )
 
-  # ── Block-calibrated lambda ratios ─────────────────────────────────────────
+  # Block-calibrated lambda ratios
   # Scale each block's lambda by its gradient magnitude at the null model,
   # so that all blocks are penalized proportionally to their natural scale.
   null_grad <- pp_grad(init, dm, y, threshold,
@@ -75,7 +75,6 @@
       ratio_sigma, ratio_xi
     ))
 
-  # ── Helper: fit at one lambda_base and return BIC ──────────────────────────
   .bic_at <- function(lam_base, init_par) {
     lam <- c(mu    = lam_base,
              sigma = lam_base * ratio_sigma,
@@ -100,7 +99,7 @@
     list(bic = bic, par = par_hat, lam = lam)
   }
 
-  # ── Phase 1: coarse grid ───────────────────────────────────────────────────
+  # Phase 1: coarse grid
   grid_coarse <- exp(seq(log(2000), log(0.05), length.out = 40L))
   bic_coarse  <- rep(NA_real_, length(grid_coarse))
   par_coarse  <- vector("list", length(grid_coarse))
@@ -140,7 +139,7 @@
   best_c   <- valid_c[which.min(bic_coarse[valid_c])]
   lam_best <- grid_coarse[best_c]
 
-  # ── Phase 2: fine grid bracketing the coarse optimum ──────────────────────
+  # Phase 2: fine grid bracketing the coarse optimum
   idx_lo     <- max(min(valid_c), best_c - 2L)
   idx_hi     <- min(max(valid_c), best_c + 2L)
   lam_lo     <- grid_coarse[idx_hi]

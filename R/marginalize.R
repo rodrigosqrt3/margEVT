@@ -129,7 +129,7 @@ marginalize <- function(fit, data,
 
   results <- list()
 
-  # ── A. Conditional scenarios ─────────────────────────────────────────────
+  # A. Conditional scenarios
   if ("A" %in% approaches) {
     if (is.null(scenarios))
       scenarios <- list("default" = list())
@@ -149,7 +149,7 @@ marginalize <- function(fit, data,
     results[["A"]] <- res_A
   }
 
-  # ── B. Parametric Monte Carlo ─────────────────────────────────────────────
+  # B. Parametric Monte Carlo
   if ("B" %in% approaches) {
     cov_B     <- lapply(mc_sample, function(yr_df)
       build_cov_annual(fit, as.list(yr_df), n_obs = n_obs,
@@ -167,7 +167,7 @@ marginalize <- function(fit, data,
     )
   }
 
-  # ── C. Empirical block bootstrap ──────────────────────────────────────────
+  # C. Empirical block bootstrap
   if ("C" %in% approaches) {
     if (!year_col %in% names(data))
       stop(sprintf("marginalize: column '%s' not found in data.", year_col))
@@ -190,7 +190,7 @@ marginalize <- function(fit, data,
         yr    <- sample(years_hist, 1L)
         df_yr <- df_valid[df_valid[[year_col]] == yr,
                           ac_in_data, drop = FALSE]
-        df_yr <- head(df_yr, n_obs)
+        df_yr <- utils::head(df_yr, n_obs)
         if (nrow(df_yr) < n_obs) return(NULL)
         build_cov_annual(fit, as.list(df_yr),
                          n_obs = n_obs, interactions = interactions)

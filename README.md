@@ -1,0 +1,170 @@
+# margEVT: Regularized Point Processes and Stochastic Marginalization for Return Level Inference
+
+`margEVT` is an R package developed to conduct non-stationary extreme value analysis under covariate-driven regimes. The package implements the statistical framework developed in Villa (2026) under the supervision of Prof. Dr. Flavio Ziegelmann, coupling a covariate-driven Non-Homogeneous Poisson Process (NHPP) with an Elastic-Net penalized maximum likelihood estimation framework and stochastically marginalized return-level estimation.
+
+---
+
+## 1. Mathematical Framework
+
+### 1.1 Non-Homogeneous Poisson Process (NHPP) Representation
+Exceedances of an extreme threshold $u$ over an observational domain are modeled as a Non-Homogeneous Poisson Process on the product space $\mathcal{S} = [0, 1] \times (u, \infty)$. The time-varying intensity function $\lambda(t, y)$ is parameterized using the location $\mu(t)$, scale $\sigma(t) > 0$, and shape $\xi(t)$ parameters of the Generalized Extreme Value (GEV) distribution:
+
+$$\lambda(t, y) = \frac{1}{\sigma(t)} \left[ 1 + \xi(t) \left( \frac{y - \mu(t)}{\sigma(t)} \right) \right]_{+}^{-1/\xi(t)-1}$$
+
+where $[a]_+ = \max(a, 0)$. 
+
+To capture non-stationarity, the parameters are modeled as linear combinations of covariate vectors $\mathbf{x}_t$:
+
+$$\mu(t) = \mu_0 + \sum_{k=1}^{K} \mu_k x_{k,t}$$
+
+$$\log(\sigma(t)) = \phi_0 + \sum_{j=1}^{J} \phi_j x_{j,t}$$
+
+$$\xi(t) = \xi_0 + \sum_{l=1}^{L} \xi_l x_{l,t}$$
+
+The logarithmic parameterization of $\sigma(t) = \exp(\phi(t))$ guarantees positivity.
+
+### 1.2 Elastic-Net Regularization and Optimization
+In high-dimensional covariate settings, parameter estimation is conducted via penalized maximum likelihood. The objective function minimizes the negative log-likelihood $\ell(\boldsymbol{\theta})$ subject to an Elastic-Net penalty:
+
+$$Q(\boldsymbol{\theta}; \lambda, \alpha) = -\ell(\boldsymbol{\theta}) + \lambda \sum_{k \in \mathcal{P}} \left[ \alpha \sqrt{\theta_k^2 + \varepsilon} + \left( \frac{1 - \alpha}{2} \right) \theta_k^2 \right]$$
+
+where:
+- $\lambda \ge 0$ controls the overall regularization strength.
+- $\alpha \in [0, 1]$ controls the balance between the $\ell_1$ (LASSO) and $\ell_2$ (Ridge) components (setting $\alpha = 1$ recovers the pure LASSO penalty).
+- $\varepsilon > 0$ is a small smoothing parameter ensuring differentiability at the origin.
+- $\mathcal{P}$ is the index set of penalized parameters. The baseline intercepts ($\mu_0, \phi_0, \xi_0$) and deterministic seasonal Fourier harmonics are kept unpenalized by construction ($\mathcal{P} \cap \text{unpenalized} = \emptyset$).
+
+The optimization is solved via the quasi-Newton BFGS or L-BFGS-B algorithm supplied with exact analytical gradients:
+
+$$\nabla_{\boldsymbol{\theta}} Q(\boldsymbol{\theta}; \lambda, \alpha) = -\nabla_{\boldsymbol{\theta}} \ell(\boldsymbol{\theta}) + \nabla_{\boldsymbol{\theta}} P_{\lambda,\alpha}(\boldsymbol{\theta})$$
+
+The optimal regularization path parameter $\lambda^*$ is selected by minimizing the Bayesian Information Criterion (BIC):
+
+$$\text{BIC}(\lambda) = -2\ell(\hat{\boldsymbol{\theta}}_\lambda) + k_\lambda \log(m)$$
+
+where $m$ denotes the number of independent, declustered exceedances, and $k_\lambda$ is the number of active parameters.
+
+---
+
+## 2. Return Level Inference
+
+Under non-stationarity, traditional definitions of a $T$-year return level are conceptually ill-defined. This package implements three distinct frameworks:
+
+### 2.1 Approach A: Static Conditional Return Level
+The covariates are fixed at a constant scenario $\mathbf{x}_t \equiv \mathbf{x}^*$, representing a hypothetical frozen climate state. The conditional return level $z_T(\mathbf{x}^*)$ is obtained analytically:
+
+$$z_T(\mathbf{x}^*) = \mu(\mathbf{x}^*) + \frac{\sigma(\mathbf{x}^*)}{\xi(\mathbf{x}^*)} \left[ \left(-\log\left(1 - \frac{1}{T}\right)\right)^{-\xi(\mathbf{x}^*)} - 1 \right]$$
+
+### 2.2 Approach B: Unconditional Parametric Stochastic Marginalization
+To capture long-run risk over the natural variability of the climate system, the non-stationary intensity is integrated over the stationary joint distribution $\Pi$ of the covariate trajectories $\mathbf{v}$:
+
+$$G_{\Pi}(z) = \mathbb{E}_{\mathbf{v} \sim \Pi} [G(z \mid \mathbf{v})] = \mathbb{E}_{\mathbf{v} \sim \Pi} \left[ \exp \left\{ -\frac{1}{n_y} \sum_{j=1}^{n_y} \left[ 1 + \xi(t_j) \left( \frac{z - \mu(t_j \mid \mathbf{v})}{\sigma(t_j \mid \mathbf{v})} \right) \right]_{+}^{-1/\xi(t_j)} \right\} \right]$$
+
+The joint distribution $\Pi$ is modeled via a stable, stationary Vector Autoregressive process, $\text{VAR}(p)$. Synthetic daily trajectories are simulated, Fourier seasonality is re-injected, and $G_{\Pi}(z)$ is estimated via Monte Carlo integration over $n_{mc}$ simulated years:
+
+$$\hat{G}_{\Pi, B}(z) = \frac{1}{n_{mc}} \sum_{r=1}^{n_{mc}} G(z \mid \mathbf{v}^{(r)})$$
+
+The marginalized unconditional return level $z_T^\Pi$ is recovered numerically as the unique root satisfying:
+
+$$\hat{G}_{\Pi, B}(z_T^\Pi) - \left( 1 - \frac{1}{T} \right) = 0$$
+
+### 2.3 Approach C: Empirical Marginalization (Non-Parametric Control)
+The continuous probability space $\Pi$ is replaced by the empirical historical distribution $\hat{\Pi}$. The integrated probability is estimated as the sample mean over the fully observed historical daily multivariate trajectories of length $n_{obs}$:
+
+$$\hat{G}_{\text{emp}, C}(z) = \frac{1}{n_{obs}} \sum_{j=1}^{n_{obs}} G(z \mid \mathbf{v}_j)$$
+
+---
+
+## 3. Model Diagnostics: Transformed Residuals
+
+Goodness-of-fit is assessed using the Time-Change Theorem. The $k$-th transformed residual $Z_k$ represents the integrated intensity measure between consecutive exceedance times $t_{k-1}$ and $t_k$:
+
+$$Z_k \approx \frac{1}{n_y} \sum_{j: t_{k-1} \le t_j < t_k} \left[ 1 + \hat{\xi}(t_j) \left( \frac{u - \hat{\mu}(t_j)}{\hat{\sigma}(t_j)} \right) \right]_{+}^{-1/\hat{\xi}(t_j)}$$
+
+Under correct model specification, $Z_k \overset{\text{iid}}{\sim} \text{Exp}(1)$, satisfying $\mathbb{E}[Z_k] = 1$ and $\text{Var}(Z_k) = 1$.
+
+---
+
+## 4. Installation
+
+You can install the stable release version of `margEVT` from CRAN:
+
+```r
+install.packages("margEVT")
+```
+
+Alternatively, you can install the development version from GitHub:
+
+```r
+# install.packages("devtools")
+devtools::install_github("rodrigo-villa/margEVT")
+```
+
+---
+
+## 5. Quick-Start Example
+
+This self-contained example simulates non-stationary extreme value data with covariate-dependent location and scale parameters, and then fits the penalized NHPP model.
+
+```r
+library(margEVT)
+
+# 1. Simulate mock non-stationary extreme value data
+set.seed(3)
+n <- 1000
+
+# Simulate standardized covariates
+MEI       <- rnorm(n, mean = 0, sd = 1)
+TSA       <- rnorm(n, mean = 0, sd = 1)
+PSdrop_t1 <- rnorm(n, mean = 0, sd = 1)
+QV2Md_t1  <- rnorm(n, mean = 0, sd = 1)
+
+# Define non-stationary GEV parameters
+# Location varies with MEI & pressure drop; Scale varies with TSA & humidity
+mu    <- 15 + 2.0 * MEI + 1.5 * PSdrop_t1
+sigma <- exp(1.2 + 0.3 * TSA + 0.1 * QV2Md_t1)
+xi    <- -0.10
+
+# Generate GEV observations using the inverse transform method
+u_rand <- runif(n)
+y      <- mu + sigma * (((-log(u_rand))^(-xi) - 1) / xi)
+
+# Combine into a structured data frame
+climate_data <- data.frame(
+  y         = y,
+  MEI       = MEI,
+  TSA       = TSA,
+  PSdrop_t1 = PSdrop_t1,
+  QV2Md_t1  = QV2Md_t1
+)
+
+# 2. Fit the non-stationary NHPP model with LASSO penalty (alpha = 1)
+# and select the optimal penalty via BIC grid search
+fit <- fit_nhpp(
+  df             = climate_data, 
+  threshold      = 19.046,
+  loc_vars       = c("MEI", "TSA", "PSdrop_t1"),
+  scale_vars     = c("MEI", "TSA", "QV2Md_t1"),
+  shape_vars     = NULL, # stationary shape
+  penalty        = "lasso",
+  alpha          = 1.0,
+  lambda         = "bic",
+  calc_hessian   = TRUE
+)
+
+# 3. Inspect estimated parameter coefficients
+summary(fit)
+
+# 4. Extract the fitted parameters and coefficients
+coef(fit)
+```
+
+---
+
+## 6. Citation
+
+To cite `margEVT` in publications, please use:
+
+> Villa, R. F. (2026). *A Novel Regularized Point Process and Stochastic Marginalization Framework for Return Level Inference under Covariate-Driven Extremes* (Master's dissertation, Instituto de Matemática e Estatística, Universidade Federal do Rio Grande do Sul, Porto Alegre, Brazil. Advisor: Flavio Ziegelmann).
+
+Alternatively, run `citation("margEVT")` in R once the package is installed.

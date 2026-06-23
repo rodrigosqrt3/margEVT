@@ -1,0 +1,12 @@
+citHeader("To cite margEVT in publications use:")
+
+bibentry(
+  bibtype     = "MastersThesis",
+  title       = "A Novel Regularized Point Process and Stochastic Marginalization Framework for Return Level Inference under Covariate-Driven Extremes",
+  author      = person("Rodrigo Fonseca", "Villa"),
+  school      = "Instituto de Matemática e Estatística, Universidade Federal do Rio Grande do Sul",
+  year        = "2026",
+  address     = "Porto Alegre, Brazil",
+  note        = "Unpublished dissertation. Advisor: Flavio Ziegelmann.",
+  textVersion = "Villa, R. F. (2026). A Novel Regularized Point Process and Stochastic Marginalization Framework for Return Level Inference under Covariate-Driven Extremes (Master's dissertation, Instituto de Matemática e Estatística, Universidade Federal do Rio Grande do Sul, Porto Alegre, Brazil. Advisor: Flavio Ziegelmann)."
+)

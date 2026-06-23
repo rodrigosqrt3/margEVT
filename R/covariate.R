@@ -61,10 +61,8 @@ build_cov_annual <- function(fit, cov_vals = list(), n_obs = 365L,
   ))
   need_cols <- need_cols[need_cols != "(Intercept)"]
 
-  # Columns that will be computed as interactions — don't fill from cov_vals
   interaction_output_cols <- names(interactions)
 
-  # ── Validate interaction columns early ────────────────────────────────────
   known_at_this_point <- c(names(df), names(cov_vals))
   for (nm in names(interactions)) {
     cols <- interactions[[nm]]
@@ -80,22 +78,20 @@ build_cov_annual <- function(fit, cov_vals = list(), n_obs = 365L,
       ))
   }
 
-  # ── Fill from cov_vals ────────────────────────────────────────────────────
   for (v in need_cols) {
     if (v %in% names(df)) next
-    if (v %in% interaction_output_cols) next   # will be computed below
+    if (v %in% interaction_output_cols) next
     if (v %in% names(cov_vals)) {
       val     <- cov_vals[[v]]
       df[[v]] <- if (length(val) == n_obs) val else rep(val[[1L]], n_obs)
     } else {
       df[[v]] <- 0
       warning(sprintf(
-        "build_cov_annual: column '%s' not in cov_vals — filled with 0.", v
+        "build_cov_annual: column '%s' not in cov_vals-filled with 0.", v
       ))
     }
   }
 
-  # ── Compute interactions ──────────────────────────────────────────────────
   for (nm in names(interactions)) {
     cols    <- interactions[[nm]]
     df[[nm]] <- df[[cols[1L]]] * df[[cols[2L]]]
