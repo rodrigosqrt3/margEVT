@@ -1,0 +1,25 @@
+Package: margEVT
+Type: Package
+Title: Marginalization for Non-Homogeneous Extreme Value Models
+Version: 0.1.0
+Authors@R: person("Rodrigo Fonseca", "Villa", email = "rodrigo03.villa@gmail.com",
+           role = c("aut", "cre"),
+           comment = c(ORCID = "0009-0005-2938-2270"))
+Description: Fits non-homogeneous point process models for extreme value
+    analysis via penalized maximum likelihood with elastic-net regularization.
+    Computes unconditional return levels by marginalizing over arbitrary
+    time-varying covariates, using conditional scenarios, parametric
+    stochastic simulation, or empirical block bootstrap.
+License: GPL (>= 3)
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.3.3
+Imports:
+    stats,
+    utils
+Suggests:
+    vars,
+    dplyr,
+    tidyr,
+    extRemes,
+    testthat (>= 3.0.0)
