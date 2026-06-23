@@ -38,7 +38,7 @@ The optimization is solved via the quasi-Newton BFGS or L-BFGS-B algorithm suppl
 
 $$\nabla_{\boldsymbol{\theta}} Q(\boldsymbol{\theta}; \lambda, \alpha) = -\nabla_{\boldsymbol{\theta}} \ell(\boldsymbol{\theta}) + \nabla_{\boldsymbol{\theta}} P_{\lambda,\alpha}(\boldsymbol{\theta})$$
 
-The optimal regularization path parameter $\lambda^*$ is selected by minimizing the Bayesian Information Criterion (BIC):
+The optimal regularization path parameter $\lambda^{\ast}$ is selected by minimizing the Bayesian Information Criterion (BIC):
 
 $$\text{BIC}(\lambda) = -2\ell(\hat{\boldsymbol{\theta}}_\lambda) + k_\lambda \log(m)$$
 
@@ -51,9 +51,9 @@ where $m$ denotes the number of independent, declustered exceedances, and $k_\la
 Under non-stationarity, traditional definitions of a $T$-year return level are conceptually ill-defined. This package implements three distinct frameworks:
 
 ### 2.1 Approach A: Static Conditional Return Level
-The covariates are fixed at a constant scenario $\mathbf{x}_t \equiv \mathbf{x}^*$, representing a hypothetical frozen climate state. The conditional return level $z_T(\mathbf{x}^*)$ is obtained analytically:
+The covariates are fixed at a constant scenario $\mathbf{x}_t \equiv \mathbf{x}^{\ast}$, representing a hypothetical frozen climate state. The conditional return level $z_T(\mathbf{x}^{\ast})$ is obtained analytically:
 
-$$z_T(\mathbf{x}^*) = \mu(\mathbf{x}^*) + \frac{\sigma(\mathbf{x}^*)}{\xi(\mathbf{x}^*)} \left[ \left(-\log\left(1 - \frac{1}{T}\right)\right)^{-\xi(\mathbf{x}^*)} - 1 \right]$$
+$$z_T(\mathbf{x}^{\ast}) = \mu(\mathbf{x}^{\ast}) + \frac{\sigma(\mathbf{x}^{\ast})}{\xi(\mathbf{x}^{\ast})} \left[ \left(-\log\left(1 - \frac{1}{T}\right)\right)^{-\xi(\mathbf{x}^{\ast})} - 1 \right]$$
 
 ### 2.2 Approach B: Unconditional Parametric Stochastic Marginalization
 To capture long-run risk over the natural variability of the climate system, the non-stationary intensity is integrated over the stationary joint distribution $\Pi$ of the covariate trajectories $\mathbf{v}$:
@@ -64,9 +64,9 @@ The joint distribution $\Pi$ is modeled via a stable, stationary Vector Autoregr
 
 $$\hat{G}_{\Pi, B}(z) = \frac{1}{n_{mc}} \sum_{r=1}^{n_{mc}} G(z \mid \mathbf{v}^{(r)})$$
 
-The marginalized unconditional return level $z_T^\Pi$ is recovered numerically as the unique root satisfying:
+The marginalized unconditional return level $z_T^{\Pi}$ is recovered numerically as the unique root satisfying:
 
-$$\hat{G}_{\Pi, B}(z_T^\Pi) - \left( 1 - \frac{1}{T} \right) = 0$$
+$$\hat{G}_{\Pi, B}(z_T^{\Pi}) - \left( 1 - \frac{1}{T} \right) = 0$$
 
 ### 2.3 Approach C: Empirical Marginalization (Non-Parametric Control)
 The continuous probability space $\Pi$ is replaced by the empirical historical distribution $\hat{\Pi}$. The integrated probability is estimated as the sample mean over the fully observed historical daily multivariate trajectories of length $n_{obs}$:
