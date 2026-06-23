@@ -81,7 +81,7 @@ Goodness-of-fit is assessed using the Time-Change Theorem. The $k$-th transforme
 
 $$Z_k \approx \frac{1}{n_y} \sum_{j: t_{k-1} \le t_j < t_k} \left[ 1 + \hat{\xi}(t_j) \left( \frac{u - \hat{\mu}(t_j)}{\hat{\sigma}(t_j)} \right) \right]_{+}^{-1/\hat{\xi}(t_j)}$$
 
-Under correct model specification, $Z_k \overset{\text{iid}}{\sim} \text{Exp}(1)$, satisfying $\mathbb{E}[Z_k] = 1$ and $\text{Var}(Z_k) = 1$.
+Under correct model specification, the transformed residuals are independent and identically distributed, $Z_k \sim \text{Exp}(1)$, satisfying $\mathbb{E}[Z_k] = 1$ and $\text{Var}(Z_k) = 1$.
 
 ---
 
