@@ -58,7 +58,7 @@ $$z_T(\mathbf{x}^{\ast}) = \mu(\mathbf{x}^{\ast}) + \frac{\sigma(\mathbf{x}^{\as
 ### 2.2 Approach B: Unconditional Parametric Stochastic Marginalization
 To capture long-run risk over the natural variability of the climate system, the non-stationary intensity is integrated over the stationary joint distribution $\Pi$ of the covariate trajectories $\mathbf{v}$:
 
-$$G_{\Pi}(z) = \mathbb{E}_{\mathbf{v} \sim \Pi} [G(z \mid \mathbf{v})] = \mathbb{E}_{\mathbf{v} \sim \Pi} \left[ \exp \left\{ -\frac{1}{n_y} \sum_{j=1}^{n_y} \left[ 1 + \xi(t_j) \left( \frac{z - \mu(t_j \mid \mathbf{v})}{\sigma(t_j \mid \mathbf{v})} \right) \right]_{+}^{-1/\xi(t_j)} \right\} \right]$$
+$$G_{\Pi}(z) = \mathbb{E}_{\mathbf{v} \sim \Pi} [G(z \mid \mathbf{v})] = \mathbb{E}_{\mathbf{v} \sim \Pi} \left[ \exp \left\{ -\frac{1}{n_{y}} \sum_{j=1}^{n_{y}} \left[ 1 + \xi(t_{j}) \left( \frac{z - \mu(t_{j} \mid \mathbf{v})}{\sigma(t_{j} \mid \mathbf{v})} \right) \right]_{{+}}^{-1/\xi(t_{j})} \right\} \right]$$
 
 The joint distribution $\Pi$ is modeled via a stable, stationary Vector Autoregressive process, $\text{VAR}(p)$. Synthetic daily trajectories are simulated, Fourier seasonality is re-injected, and $G_{\Pi}(z)$ is estimated via Monte Carlo integration over $n_{mc}$ simulated years:
 
