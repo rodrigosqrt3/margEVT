@@ -1,6 +1,8 @@
 # margEVT: Regularized Point Processes and Stochastic Marginalization for Return Level Inference
 
-[![R-CMD-check-and-coverage](https://github.com/rodrigosqrt3/margEVT/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/rodrigosqrt3/margEVT/actions/workflows/R-CMD-check.yaml) &nbsp; [![codecov](https://codecov.io/gh/rodrigosqrt3/margEVT/branch/main/graph/badge.svg)](https://codecov.io/gh/rodrigosqrt3/margEVT)
+[![R-CMD-check-and-coverage](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml/badge.svg)](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml) &nbsp; [![R-CMD-check-and-coverage](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml/badge.svg)](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml)
+
+[![codecov](https://codecov.io/gh/rodrigosqrt3/margEVT/branch/main/graph/badge.svg)](https://codecov.io/gh/rodrigosqrt3/margEVT)
 
 `margEVT` is an R package developed to conduct non-stationary extreme value analysis under covariate-driven regimes. The package implements the statistical framework developed in Villa (2026) under the supervision of Prof. Dr. Flavio Ziegelmann, coupling a covariate-driven Non-Homogeneous Poisson Process (NHPP) with an Elastic-Net penalized maximum likelihood estimation framework and stochastically marginalized return-level estimation.
 
