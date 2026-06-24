@@ -1,6 +1,6 @@
 # margEVT: Regularized Point Processes and Stochastic Marginalization for Return Level Inference
 
-[![R-CMD-check-and-coverage](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml/badge.svg)](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml) &nbsp; [![codecov](https://codecov.io/gh/rodrigosqrt3/margEVT/branch/main/graph/badge.svg)](https://codecov.io/gh/rodrigosqrt3/margEVT)
+[![CRAN status](https://www.r-pkg.org/badges/version/margEVT)](https://CRAN.R-project.org/package=margEVT) &nbsp; [![R-CMD-check](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml/badge.svg)](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml) &nbsp; [![codecov](https://codecov.io/gh/rodrigosqrt3/margEVT/branch/main/graph/badge.svg)](https://app.codecov.io/gh/rodrigosqrt3/margEVT)
 
 `margEVT` is an R package developed to conduct non-stationary extreme value analysis under covariate-driven regimes. The package implements the statistical framework developed in Villa (2026) under the supervision of Prof. Dr. Flavio Ziegelmann, coupling a covariate-driven Non-Homogeneous Poisson Process (NHPP) with an Elastic-Net penalized maximum likelihood estimation framework and stochastically marginalized return-level estimation.
 
@@ -106,59 +106,109 @@ devtools::install_github("rodrigo-villa/margEVT")
 
 ## 5. Quick-Start Example
 
-This self-contained example simulates non-stationary extreme value data with covariate-dependent location and scale parameters, and then fits the penalized NHPP model.
+This reproducible example simulates a generic non-stationary extreme value process, fits the regularized NHPP model using the LASSO penalty ($\alpha = 1$) with BIC-based $\lambda$ selection, and computes return levels under all three major marginalization frameworks (including the stochastically marginalized Approach B).
 
 ```r
 library(margEVT)
 
-# 1. Simulate mock non-stationary extreme value data
+# =============================================================================
+# 1. Simulate Generic Non-Stationary Extreme Value Data
+# =============================================================================
 set.seed(3)
-n <- 1000
+n_years    <- 10L
+n_per_year <- 100L
+n          <- n_years * n_per_year
+years      <- rep(2011:(2011 + n_years - 1L), each = n_per_year)
 
-# Simulate standardized covariates
-MEI       <- rnorm(n, mean = 0, sd = 1)
-TSA       <- rnorm(n, mean = 0, sd = 1)
-PSdrop_t1 <- rnorm(n, mean = 0, sd = 1)
-QV2Md_t1  <- rnorm(n, mean = 0, sd = 1)
+# Simulate 4 generic standardized covariates
+x1 <- rnorm(n, mean = 0, sd = 1)
+x2 <- rnorm(n, mean = 0, sd = 1)
+x3 <- rnorm(n, mean = 0, sd = 1)
+x4 <- rnorm(n, mean = 0, sd = 1)
 
 # Define non-stationary GEV parameters
-# Location varies with MEI & pressure drop; Scale varies with TSA & humidity
-mu    <- 15 + 2.0 * MEI + 1.5 * PSdrop_t1
-sigma <- exp(1.2 + 0.3 * TSA + 0.1 * QV2Md_t1)
-xi    <- -0.10
+# Location varies with x1 and x3; Scale (log) varies with x2 and x4
+mu    <- 15 + 2.0 * x1 + 1.5 * x3
+sigma <- exp(1.2 + 0.3 * x2 + 0.1 * x4)
+xi    <- -0.10  # Bounded upper tail (Weibull domain)
 
-# Generate GEV observations using the inverse transform method
+# Generate non-stationary GEV observations via the inverse transform method
 u_rand <- runif(n)
 y      <- mu + sigma * (((-log(u_rand))^(-xi) - 1) / xi)
 
 # Combine into a structured data frame
-climate_data <- data.frame(
-  y         = y,
-  MEI       = MEI,
-  TSA       = TSA,
-  PSdrop_t1 = PSdrop_t1,
-  QV2Md_t1  = QV2Md_t1
+sim_data <- data.frame(
+  y    = y,
+  x1   = x1,
+  x2   = x2,
+  x3   = x3,
+  x4   = x4,
+  year = years
 )
 
-# 2. Fit the non-stationary NHPP model with LASSO penalty (alpha = 1)
-# and select the optimal penalty via BIC grid search
+# =============================================================================
+# 2. Fit the Penalized Non-Stationary NHPP Model
+# =============================================================================
+# The optimal penalty strength (lambda) is selected via a two-phase BIC search.
 fit <- fit_nhpp(
-  df             = climate_data, 
-  threshold      = 19.046,
-  loc_vars       = c("MEI", "TSA", "PSdrop_t1"),
-  scale_vars     = c("MEI", "TSA", "QV2Md_t1"),
-  shape_vars     = NULL, # stationary shape
+  df             = sim_data, 
+  threshold      = 19,
+  loc_vars       = c("x1", "x2", "x3"),
+  scale_vars     = c("x1", "x2", "x4"),
+  shape_vars     = NULL,       # Stationary shape parameter
   penalty        = "lasso",
   alpha          = 1.0,
   lambda         = "bic",
-  calc_hessian   = TRUE
+  obs_per_year   = 100,        # 100 observations per annual block
+  calc_hessian   = TRUE,
+  verbose        = TRUE
 )
 
-# 3. Inspect estimated parameter coefficients
+# Inspect estimated parameter coefficients and Hessian conditioning
 summary(fit)
 
-# 4. Extract the fitted parameters and coefficients
+# Extract raw coefficients
 coef(fit)
+
+# =============================================================================
+# 4. Generate a Parametric Monte Carlo Sample (For Approach B)
+# =============================================================================
+# Approach B requires a list of data frames representing simulated years.
+# Here we simulate 50 years, each containing n_obs = 100 observations,
+# mimicking a stable, multi-decadal stochastic generator (e.g., VAR(p)).
+set.seed(123)
+n_sim_years <- 50L
+mc_sample <- lapply(seq_len(n_sim_years), function(i) {
+  data.frame(
+    x1 = rnorm(100L),
+    x2 = rnorm(100L),
+    x3 = rnorm(100L),
+    x4 = rnorm(100L)
+  )
+})
+
+# =============================================================================
+# 5. Compute Unconditional Return Levels (Core Contribution)
+# =============================================================================
+# Rather than conditioning on a "frozen" covariate state (Approach A),
+# we integrate out covariate uncertainty under both the parametric generator
+# (Approach B) and the non-parametric empirical block bootstrap (Approach C).
+rl_long <- marginalize(
+  fit         = fit,
+  data        = sim_data,
+  TRs         = c(2, 5, 10, 50), # Return periods (years)
+  n_obs       = 100L,            # 100 observations per year
+  approaches  = c("A", "B", "C"),# Evaluate all three approaches
+  scenarios   = list("baseline" = list(x1 = 0, x2 = 0, x3 = 0, x4 = 0)),
+  mc_sample   = mc_sample,       # Supplied simulated sample for Approach B
+  n_boot      = 100L,            # 100 bootstrap years for Approach C
+  seed        = 42L,
+  year_col    = "year"
+)
+
+# Convert the long-format return levels into a wide-format risk table
+rl_wide <- rl_table(rl_long)
+print(rl_wide)
 ```
 
 ---
