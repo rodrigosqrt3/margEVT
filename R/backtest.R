@@ -182,7 +182,6 @@ backtest <- function(fit, data, varname,
 
   binom_list <- lapply(TRs, function(TR) {
     col   <- paste0("exc_T", TR)
-    if (!col %in% names(df_results)) return(NULL)
     n_exc <- sum(df_results[[col]], na.rm = TRUE)
     n_tot <- sum(!is.na(df_results[[col]]))
     p_obs <- n_exc / n_tot

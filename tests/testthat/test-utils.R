@@ -1,3 +1,6 @@
+# -----------------------------------------------------------------------------
+# Test Helper
+# -----------------------------------------------------------------------------
 make_utils_fit <- function(seed = 1L) {
   set.seed(seed)
   n  <- 300L
@@ -9,6 +12,9 @@ make_utils_fit <- function(seed = 1L) {
            penalty = "none", verbose = FALSE)
 }
 
+# -----------------------------------------------------------------------------
+# summary.nhpp_fit Tests
+# -----------------------------------------------------------------------------
 test_that("summary.nhpp_fit runs without error", {
   fit <- make_utils_fit()
   expect_output(summary(fit), regexp = "nhpp_fit summary")
@@ -19,6 +25,35 @@ test_that("summary.nhpp_fit shows threshold", {
   expect_output(summary(fit), regexp = "Threshold")
 })
 
+test_that("summary.nhpp_fit handles Hessian diagnostic branches (Mocked)", {
+  # 1. Helper mock base list
+  base_mock <- list(
+    threshold = 4, penalty = "lasso", lambda = 0.1, alpha = 1,
+    penalize_shape = TRUE, obs_per_year = 365.25, converged = TRUE,
+    nllh_raw = 100, nllh_pen = 105, par = c(a = 1.0, b = 0.0) # b = 0 triggers the 'Shrunk to zero' print
+  )
+  class(base_mock) <- "nhpp_fit"
+
+  # A. Test: Shrunk parameters printing & Hessian positive-definite
+  fit_ok <- base_mock
+  fit_ok$hessian <- matrix(c(2, 0, 0, 2), nrow = 2) # positive definite
+  expect_output(summary(fit_ok), regexp = "Hessian positive definite")
+  expect_output(summary(fit_ok), regexp = "Shrunk to zero : b")
+
+  # B. Test: Hessian not positive-definite
+  fit_npd <- base_mock
+  fit_npd$hessian <- matrix(c(-1, 0, 0, 2), nrow = 2) # has negative eigenvalue
+  expect_output(summary(fit_npd), regexp = "Hessian not positive definite")
+
+  # C. Test: Hessian ill-conditioned
+  fit_ill <- base_mock
+  fit_ill$hessian <- matrix(c(1e9, 0, 0, 1e-3), nrow = 2) # extremely high condition number
+  expect_output(summary(fit_ill), regexp = "Hessian ill-conditioned")
+})
+
+# -----------------------------------------------------------------------------
+# is_nhpp_fit Tests
+# -----------------------------------------------------------------------------
 test_that("is_nhpp_fit returns TRUE for nhpp_fit", {
   fit <- make_utils_fit()
   expect_true(is_nhpp_fit(fit))
@@ -28,6 +63,29 @@ test_that("is_nhpp_fit returns FALSE for plain list", {
   expect_false(is_nhpp_fit(list(a = 1)))
 })
 
+# -----------------------------------------------------------------------------
+# bic_nhpp Tests
+# -----------------------------------------------------------------------------
+test_that("bic_nhpp returns a finite scalar", {
+  fit <- make_utils_fit()
+  b   <- bic_nhpp(fit)
+  expect_length(b, 1L)
+  expect_true(is.finite(b))
+})
+
+test_that("bic_nhpp rejects non-nhpp_fit objects", {
+  expect_error(bic_nhpp(list(a = 1)), regexp = "must be an nhpp_fit object")
+})
+
+test_that("bic_nhpp handles non-finite raw likelihood", {
+  mock_inf <- list(nllh_raw = NA_real_)
+  class(mock_inf) <- "nhpp_fit"
+  expect_identical(bic_nhpp(mock_inf), NA_real_)
+})
+
+# -----------------------------------------------------------------------------
+# n_exceedances Tests
+# -----------------------------------------------------------------------------
 test_that("n_exceedances returns correct count", {
   set.seed(1L)
   n  <- 300L
@@ -37,13 +95,13 @@ test_that("n_exceedances returns correct count", {
   expect_equal(n_exceedances(fit, y), sum(y > 4))
 })
 
-test_that("bic_nhpp returns a finite scalar", {
-  fit <- make_utils_fit()
-  b   <- bic_nhpp(fit)
-  expect_length(b, 1L)
-  expect_true(is.finite(b))
+test_that("n_exceedances rejects non-nhpp_fit objects", {
+  expect_error(n_exceedances(list(a = 1), 1:10), regexp = "must be an nhpp_fit object")
 })
 
+# -----------------------------------------------------------------------------
+# rl_table Tests
+# -----------------------------------------------------------------------------
 test_that("rl_table produces wide format", {
   set.seed(1L)
   n  <- 300L

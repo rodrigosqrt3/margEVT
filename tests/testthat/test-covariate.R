@@ -85,8 +85,50 @@ test_that("active_covariates returns NULL for stationary model", {
 test_that("active_covariates returns covariate names for non-stationary model", {
   fit <- make_fit_with_cov()
   ac  <- active_covariates(fit)
-  # mei and tsa were included with lambda=0 so both should be active
   expect_true(all(c("mei", "tsa") %in% ac))
-  # seasonal terms should NOT appear
   expect_false(any(c("cos1", "sen1", "cos2", "sen2") %in% ac))
+})
+
+test_that("build_cov_annual and active_covariates reject non-nhpp_fit objects", {
+  expect_error(build_cov_annual(list(), list()), regexp = "must be an nhpp_fit object")
+  expect_error(active_covariates(list()), regexp = "must be an nhpp_fit object")
+})
+
+test_that("build_cov_annual interaction validation throws error if not exactly 2 columns", {
+  fit <- make_fit_with_cov()
+
+  expect_error(
+    suppressWarnings(
+      build_cov_annual(fit, cov_vals = list(mei = 0), interactions = list(bad = c("mei")))
+    ),
+    regexp = "must name exactly 2 columns"
+  )
+
+  expect_error(
+    suppressWarnings(
+      build_cov_annual(fit, cov_vals = list(mei = 0), interactions = list(bad = c("mei", "tsa", "cos1")))
+    ),
+    regexp = "must name exactly 2 columns"
+  )
+})
+
+test_that("active_covariates evaluates scale and shape parameters correctly", {
+  set.seed(42L)
+  n <- 300L
+  df <- data.frame(
+    y = c(stats::rexp(n, 0.5), stats::runif(20L, 5, 15)),
+    scale_cov = stats::rnorm(n + 20L),
+    shape_cov = stats::rnorm(n + 20L)
+  )
+
+  fit <- fit_nhpp(df, threshold = 4,
+                  loc_vars = NULL,
+                  scale_vars = "scale_cov",
+                  shape_vars = "shape_cov",
+                  penalty = "none", lambda = 0, verbose = FALSE)
+
+  ac <- active_covariates(fit)
+
+  expect_true("scale_cov" %in% ac)
+  expect_true("shape_cov" %in% ac)
 })

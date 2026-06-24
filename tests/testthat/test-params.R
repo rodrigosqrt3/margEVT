@@ -1,4 +1,3 @@
-# Helper: fit a simple model we can predict from
 make_fit <- function(seed = 1L) {
   set.seed(seed)
   n  <- 300L
@@ -44,11 +43,19 @@ test_that("stationary model returns constant mu and sigma", {
 })
 
 test_that("missing column in newdata throws informative error", {
-  fit     <- make_fit()   # model uses column x
-  newdata <- data.frame(z = rnorm(5L))   # x is missing
+  fit     <- make_fit()
+  newdata <- data.frame(z = rnorm(5L))
   expect_error(predict_params(fit, newdata), regexp = "not found in newdata")
 })
 
 test_that("predict_params rejects non nhpp_fit input", {
   expect_error(predict_params(list(a = 1)), regexp = "nhpp_fit")
+})
+
+test_that("predict_params rejects non-data.frame newdata", {
+  fit <- make_fit()
+  expect_error(
+  predict_params(fit, newdata = list(x = 1:10)),
+  regexp = "must be a data frame"
+  )
 })

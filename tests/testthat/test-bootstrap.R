@@ -1,3 +1,6 @@
+library(testthat)
+library(margEVT)
+
 # Helper: fit a simple model we can bootstrap from
 make_boot_fit <- function(seed = 1L) {
   set.seed(seed)
@@ -71,12 +74,58 @@ test_that("bootstrap_coef estimates match fit$par", {
                unname(round(s$fit$par[res$parameter], 5L)))
 })
 
-test_that("bootstrap_rl rejects non nhpp_fit", {
-  expect_error(bootstrap_rl(list(), data.frame()),
-               regexp = "nhpp_fit")
+test_that("bootstrap_rl and bootstrap_coef input validations", {
+  s <- make_boot_fit()
+  expect_error(bootstrap_rl(list(), data.frame()), regexp = "nhpp_fit")
+  expect_error(bootstrap_coef(list(), data.frame()), regexp = "nhpp_fit")
+  expect_error(bootstrap_rl(s$fit, list(), TRs = 10, R = 2), regexp = "must be a data frame")
+  expect_error(bootstrap_coef(s$fit, list(), R = 2), regexp = "must be a data frame")
+  expect_error(bootstrap_rl(s$fit, s$df, TRs = 10, R = 2, approach = "Z"), regexp = "must be one of 'A', 'B', 'C'")
+
+  df_few <- s$df
+  df_few$y <- 0
+  expect_error(bootstrap_rl(s$fit, df_few, TRs = 10, R = 2), regexp = "fewer than 5 exceedances")
+  expect_error(bootstrap_coef(s$fit, df_few, R = 2), regexp = "fewer than 5 exceedances")
 })
 
-test_that("bootstrap_coef rejects non nhpp_fit", {
-  expect_error(bootstrap_coef(list(), data.frame()),
-               regexp = "nhpp_fit")
+test_that("bootstrap_rl and bootstrap_coef print verbose progress messages", {
+  s <- make_boot_fit()
+  expect_message(bootstrap_rl(s$fit, s$df, TRs = 10, R = 1L, approach = "A", verbose = TRUE), regexp = "replicate 1")
+  expect_message(bootstrap_coef(s$fit, s$df, R = 1L, verbose = TRUE), regexp = "replicate 1")
+})
+
+test_that("bootstrap functions handle non-convergence skips", {
+  s <- make_boot_fit()
+  mock_fit_nhpp <- function(...) list(converged = FALSE)
+  testthat::local_mocked_bindings(fit_nhpp = mock_fit_nhpp)
+
+  res_rl <- bootstrap_rl(s$fit, s$df, TRs = 10, R = 1L, approach = "A", verbose = FALSE)
+  expect_equal(res_rl$n_ok, 0L)
+  res_coef <- bootstrap_coef(s$fit, s$df, R = 1L, verbose = FALSE)
+  expect_equal(res_coef$n_ok[1], 0L)
+})
+
+test_that("bootstrap_rl handles NULL from marginalize", {
+  s <- make_boot_fit()
+  mock_marg <- function(...) NULL
+  testthat::local_mocked_bindings(marginalize = mock_marg)
+
+  res <- bootstrap_rl(s$fit, s$df, TRs = 10, R = 1L, approach = "A", verbose = FALSE)
+  expect_equal(res$n_ok, 0L)
+})
+
+test_that("bootstrap catches invalid GPD scale limit", {
+  s <- make_boot_fit()
+
+  # Directly overwrite the stored fitted values!
+  # beta_t = sigma + xi * (threshold - mu)
+  # beta_t = exp(-50) + (-10) * (4 - 0) = -40 <= 0
+  s$fit$fitted$mu    <- rep(0.0, nrow(s$df))
+  s$fit$fitted$sigma <- rep(exp(-50.0), nrow(s$df))
+  s$fit$fitted$xi    <- rep(-10.0, nrow(s$df))
+
+  expect_error(
+    bootstrap_coef(s$fit, s$df, R = 2, verbose = FALSE),
+    regexp = "invalid GPD scale"
+  )
 })

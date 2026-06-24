@@ -1,3 +1,6 @@
+library(testthat)
+library(margEVT)
+
 # Helper: fit stationary model with synthetic data
 make_stationary_fit <- function(seed = 1L) {
   set.seed(seed)
@@ -67,13 +70,11 @@ test_that("approaches A and C give similar results for stationary model", {
   resA <- marginalize(s$fit, s$df, TRs = 10, approaches = "A")
   resC <- marginalize(s$fit, s$df, TRs = 10, approaches = "C",
                       n_boot = 200L, seed = 1L)
-  # Should agree within 20% for a stationary model
   expect_lt(abs(resA$RL - resC$RL) / resA$RL, 0.20)
 })
 
 test_that("approach B with mc_sample returns correct structure", {
   s  <- make_cov_fit()
-  # Simulate 50 years of covariate trajectories
   set.seed(1L)
   mc <- lapply(seq_len(50L), function(i)
     data.frame(x = stats::rnorm(365L)))
@@ -111,7 +112,6 @@ test_that("interactions are passed through correctly", {
     b    = stats::rnorm(n + 40L),
     year = rep(1981:2020, each = 13L)[seq_len(n + 40L)]
   )
-  # Model uses interaction ab = a * b
   df$ab <- df$a * df$b
   fit <- fit_nhpp(df, threshold = 4, loc_vars = c("a", "b", "ab"),
                   lambda = 0, verbose = FALSE)
@@ -120,4 +120,23 @@ test_that("interactions are passed through correctly", {
   res  <- marginalize(fit, df, TRs = 10, approaches = "A",
                       scenarios = sc, interactions = ints)
   expect_true(is.finite(res$RL))
+})
+
+test_that("marginalize rejects invalid inputs", {
+  s <- make_stationary_fit()
+  expect_error(marginalize(list(), s$df), regexp = "must be an nhpp_fit object")
+  expect_error(marginalize(s$fit, list()), regexp = "must be a data frame")
+})
+
+test_that("marginalize approach C handles under-observed years", {
+  # MUST use the covariate model. The stationary model skips the resampling block!
+  s <- make_cov_fit()
+
+  # The dataset has exactly 13 rows per year.
+  # By passing n_obs = 50L, nrow(df_yr) < 50 evaluates to TRUE for all years.
+  # This returns NULL for all bootstraps and throws the expected error flawlessly.
+  expect_error(
+    marginalize(s$fit, s$df, TRs = 10, approaches = "C", n_boot = 5L, n_obs = 50L),
+    regexp = "approach C produced no valid bootstrap years"
+  )
 })
