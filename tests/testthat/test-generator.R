@@ -3,7 +3,8 @@
 # Tests for fit_var_generator() and simulate_covariates() (R/generator.R)
 # =============================================================================
 
-# ---- shared fixtures --------------------------------------------------------
+library(testthat)
+library(margEVT)
 
 .make_fake_fit <- function() structure(list(), class = "nhpp_fit")
 
@@ -28,8 +29,6 @@
     df$cos2 <- s$cos2; df$sen2 <- s$sen2
   }
 
-  # Two correlated, seasonally-modulated "active" covariates with genuine
-  # residual variance — these should produce a well-behaved VAR fit.
   base1 <- 2 * s$cos1 + 0.5 * s$sen2 + arima.sim(list(ar = 0.6), n)
   base2 <- 0.4 * base1 + s$sen1 + arima.sim(list(ar = 0.4), n)
 
@@ -37,16 +36,11 @@
   df$x2 <- as.numeric(base2)
 
   if (n_vars >= 3L) {
-    # Degenerate covariate: an exact linear combination of the seasonal
-    # harmonics, so its deseasonalized residual variance is ~0. Exercises
-    # the sd_res < 1e-8 guard.
     df$x3 <- 3 * s$cos1 - 1.5 * s$sen2
   }
 
   df
 }
-
-# ---- fit_var_generator(): input validation ---------------------------------
 
 test_that("fit_var_generator validates `fit` and `data`", {
   df <- .make_test_data()
@@ -63,9 +57,15 @@ test_that("fit_var_generator validates `fit` and `data`", {
 test_that("fit_var_generator errors when the 'vars' package is unavailable", {
   fit <- .make_fake_fit()
   df  <- .make_test_data()
-  mockery::stub(fit_var_generator, "requireNamespace", FALSE)
+
+  fit_var_mocked <- fit_var_generator
+  environment(fit_var_mocked) <- list2env(
+    list(requireNamespace = function(...) FALSE),
+    parent = environment(fit_var_generator)
+  )
+
   expect_error(
-    fit_var_generator(fit, df, vars = c("x1", "x2")),
+    fit_var_mocked(fit, df, vars = c("x1", "x2")),
     "package 'vars' is required"
   )
 })
@@ -82,7 +82,9 @@ test_that("fit_var_generator errors on explicit vars missing from data", {
 test_that("fit_var_generator warns and returns NULL with no active covariates", {
   fit <- .make_fake_fit()
   df  <- .make_test_data()
-  mockery::stub(fit_var_generator, "active_covariates", NULL)
+
+  testthat::local_mocked_bindings(active_covariates = function(...) NULL)
+
   expect_warning(
     result <- fit_var_generator(fit, df),
     "no active covariates"
@@ -93,10 +95,10 @@ test_that("fit_var_generator warns and returns NULL with no active covariates", 
 test_that("fit_var_generator uses active_covariates() when vars = NULL", {
   fit <- .make_fake_fit()
   df  <- .make_test_data()
-  mockery::stub(fit_var_generator, "active_covariates", c("x1", "x2", "ghost_col"))
+
+  testthat::local_mocked_bindings(active_covariates = function(...) c("x1", "x2", "ghost_col"))
+
   gen <- fit_var_generator(fit, df)
-  # ghost_col isn't in data and must be silently dropped by the intersection,
-  # not passed through to the VAR fit.
   expect_setequal(gen$vars, c("x1", "x2"))
 })
 
@@ -110,8 +112,6 @@ test_that("fit_var_generator errors when too few complete rows remain", {
   )
 })
 
-# ---- fit_var_generator(): seasonal harmonics handling -----------------------
-
 test_that("fit_var_generator builds cos1/sen1/cos2/sen2 when absent from data", {
   fit <- .make_fake_fit()
   df  <- .make_test_data(with_seasonal_cols = FALSE)
@@ -124,15 +124,10 @@ test_that("fit_var_generator builds cos1/sen1/cos2/sen2 when absent from data", 
 test_that("fit_var_generator reuses existing seasonal columns when present", {
   fit <- .make_fake_fit()
   df  <- .make_test_data(with_seasonal_cols = TRUE)
-  # Corrupt the harmonics in a way that would error downstream if
-  # build_var_generator() tried to overwrite/recompute and got confused
-  # by an unexpected column type.
   gen <- fit_var_generator(fit, df, vars = c("x1", "x2"))
   expect_s3_class(gen, "nhpp_var_generator")
   expect_identical(gen$vars, c("x1", "x2"))
 })
-
-# ---- fit_var_generator(): K == 1 (dummy-noise padding) ----------------------
 
 test_that("fit_var_generator pads a single covariate with dummy noise for VAR", {
   fit <- .make_fake_fit()
@@ -144,16 +139,12 @@ test_that("fit_var_generator pads a single covariate with dummy noise for VAR", 
   expect_identical(gen$fit_var$K, 2L)
 })
 
-# ---- fit_var_generator(): degenerate residual variance guard ----------------
-
 test_that("fit_var_generator guards against near-zero residual sd", {
   fit <- .make_fake_fit()
   df  <- .make_test_data(n_vars = 3L)
   gen <- fit_var_generator(fit, df, vars = c("x1", "x3"))
   expect_equal(gen$seasonal_models$x3$sd_res, 1)
 })
-
-# ---- fit_var_generator(): lag_max argument -----------------------------------
 
 test_that("fit_var_generator respects an explicit lag_max", {
   fit <- .make_fake_fit()
@@ -170,8 +161,6 @@ test_that("fit_var_generator computes a default lag_max when not supplied", {
   expect_true(gen$p_opt >= 1L)
 })
 
-# ---- simulate_covariates(): input handling ----------------------------------
-
 test_that("simulate_covariates returns NULL when generator is NULL", {
   expect_null(simulate_covariates(NULL, n_mc = 5L))
 })
@@ -182,8 +171,6 @@ test_that("simulate_covariates validates the generator class", {
     "must come from fit_var_generator"
   )
 })
-
-# ---- simulate_covariates(): output structure --------------------------------
 
 test_that("simulate_covariates produces the right shape and column names", {
   fit <- .make_fake_fit()
@@ -230,8 +217,6 @@ test_that("simulate_covariates output works as mc_sample for build_cov_annual()"
   gen <- fit_var_generator(fit, df, vars = c("x1", "x2"))
   mc  <- simulate_covariates(gen, n_mc = 1L, n_obs = 20L, burn_in = 5L, seed = 1L)
 
-  # build_cov_annual() needs an nhpp_fit with a $dm slot; fabricate a minimal
-  # one whose mu design matrix references the simulated covariates.
   fake_dm <- list(
     X_mu    = matrix(0, nrow = 1L, ncol = 3L,
                      dimnames = list(NULL, c("(Intercept)", "x1", "x2"))),

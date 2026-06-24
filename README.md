@@ -170,21 +170,15 @@ summary(fit)
 coef(fit)
 
 # =============================================================================
-# 4. Generate a Parametric Monte Carlo Sample (For Approach B)
+# 4. Fit the Parametric VAR(p) Stochastic Generator
 # =============================================================================
-# Approach B requires a list of data frames representing simulated years.
-# Here we simulate 50 years, each containing n_obs = 100 observations,
-# mimicking a stable, multi-decadal stochastic generator (e.g., VAR(p)).
-set.seed(123)
-n_sim_years <- 50L
-mc_sample <- lapply(seq_len(n_sim_years), function(i) {
-  data.frame(
-    x1 = rnorm(100L),
-    x2 = rnorm(100L),
-    x3 = rnorm(100L),
-    x4 = rnorm(100L)
-  )
-})
+# Automatically deseasonalizes active covariates, selects the optimal lag p 
+# via BIC, and fits the multivariate VAR model to the anomalies.
+generator <- fit_var_generator(fit, sim_data)
+
+# Simulate 50 years of stochastic trajectories from the fitted generator,
+# automatically re-injecting the seasonal harmonics.
+mc_sample <- simulate_covariates(generator, n_mc = 50L, n_obs = 100L, seed = 123L)
 
 # =============================================================================
 # 5. Compute Unconditional Return Levels (Core Contribution)
@@ -199,7 +193,7 @@ rl_long <- marginalize(
   n_obs       = 100L,            # 100 observations per year
   approaches  = c("A", "B", "C"),# Evaluate all three approaches
   scenarios   = list("baseline" = list(x1 = 0, x2 = 0, x3 = 0, x4 = 0)),
-  mc_sample   = mc_sample,       # Supplied simulated sample for Approach B
+  mc_sample   = mc_sample,       # Supplied simulated sample from our VAR(p)
   n_boot      = 100L,            # 100 bootstrap years for Approach C
   seed        = 42L,
   year_col    = "year"

@@ -1,7 +1,6 @@
 library(testthat)
 library(margEVT)
 
-# Helper: fit stationary model with synthetic data
 make_stationary_fit <- function(seed = 1L) {
   set.seed(seed)
   n  <- 500L
@@ -15,7 +14,6 @@ make_stationary_fit <- function(seed = 1L) {
   )
 }
 
-# Helper: fit with one covariate
 make_cov_fit <- function(seed = 2L) {
   set.seed(seed)
   n  <- 500L
