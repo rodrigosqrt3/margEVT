@@ -26,9 +26,9 @@ LazyData: true
 RoxygenNote: 7.3.3
 Imports:
     stats,
-    utils
+    utils,
+    vars
 Suggests:
-    vars,
     dplyr,
     tidyr,
     extRemes,
