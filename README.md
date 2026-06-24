@@ -1,6 +1,6 @@
 # margEVT: Regularized Point Processes and Stochastic Marginalization for Return Level Inference
 
-[![CRAN status](https://www.r-pkg.org/badges/version/margEVT)](https://CRAN.R-project.org/package=margEVT) &nbsp; [![R-CMD-check](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml/badge.svg)](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml) &nbsp; [![codecov](https://codecov.io/gh/rodrigosqrt3/margEVT/branch/main/graph/badge.svg)](https://codecov.io/gh/rodrigosqrt3/margEVT)
+[![CRAN status](https://www.r-pkg.org/badges/version/margEVT)](https://CRAN.R-project.org/package=margEVT) &nbsp; [![R-CMD-check](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml/badge.svg)](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml) &nbsp; [![codecov](https://codecov.io/gh/rodrigosqrt3/margEVT/branch/main/graph/badge.svg)](https://app.codecov.io/gh/rodrigosqrt3/margEVT)
 
 `margEVT` is an R package developed to conduct non-stationary extreme value analysis under covariate-driven regimes. The package implements the statistical framework developed in Villa (2026) under the supervision of Prof. Dr. Flavio Ziegelmann, coupling a covariate-driven Non-Homogeneous Poisson Process (NHPP) with an Elastic-Net penalized maximum likelihood estimation framework and stochastically marginalized return-level estimation.
 
@@ -112,7 +112,7 @@ This reproducible example simulates a generic non-stationary extreme value proce
 library(margEVT)
 
 # =============================================================================
-# 1. Simulate Generic Non-Stationary Extreme Value Data
+# 1. Simulate Non-Stationary Extreme Value Data
 # =============================================================================
 set.seed(3)
 n_years    <- 10L
@@ -136,7 +136,6 @@ xi    <- -0.10  # Bounded upper tail (Weibull domain)
 u_rand <- runif(n)
 y      <- mu + sigma * (((-log(u_rand))^(-xi) - 1) / xi)
 
-# Combine into a structured data frame
 sim_data <- data.frame(
   y    = y,
   x1   = x1,
@@ -149,7 +148,7 @@ sim_data <- data.frame(
 # =============================================================================
 # 2. Fit the Penalized Non-Stationary NHPP Model
 # =============================================================================
-# The optimal penalty strength (lambda) is selected via a two-phase BIC search.
+
 fit <- fit_nhpp(
   df             = sim_data, 
   threshold      = 19,
