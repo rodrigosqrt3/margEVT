@@ -16,7 +16,7 @@
 # -----------------------------------------------------------------------------
 new_nhpp_fit <- function(par, dm, threshold, nllh_pen, nllh_raw,
                          lambda, alpha, penalty, penalize_shape,
-                         hessian, fitted, obs_per_year, converged) {
+                         hessian, fitted, obs_per_year, converged, n_exc) {
   structure(
     list(
       par            = par,
@@ -31,7 +31,8 @@ new_nhpp_fit <- function(par, dm, threshold, nllh_pen, nllh_raw,
       hessian        = hessian,
       fitted         = fitted,
       obs_per_year   = obs_per_year,
-      converged      = converged
+      converged      = converged,
+      n_exc          = n_exc
     ),
     class = "nhpp_fit"
   )
@@ -308,7 +309,8 @@ fit_nhpp <- function(df, threshold,
     hessian        = res$hessian,
     fitted         = fitted,
     obs_per_year   = obs_per_year,
-    converged      = res$converged
+    converged      = res$converged,
+    n_exc          = n_exc
   )
 }
 

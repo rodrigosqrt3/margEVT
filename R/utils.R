@@ -77,11 +77,9 @@ bic_nhpp <- function(fit, tol = 1e-2) {
     stop("bic_nhpp: `fit` must be an nhpp_fit object.")
   if (!is.finite(fit$nllh_raw))
     return(NA_real_)
-  n_exc    <- sum(fit$dm$X_mu[, 1L])   # proxy: nrow of training data
-  # Better: count exceedances implied by threshold
-  # We don't store n_exc, so use active parameter count only
+
   k_active <- sum(abs(fit$par) > tol)
-  2 * fit$nllh_raw + k_active * log(max(k_active, 2L))
+  2 * fit$nllh_raw + k_active * log(fit$n_exc)
 }
 
 
