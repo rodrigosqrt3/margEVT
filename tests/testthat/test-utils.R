@@ -139,3 +139,34 @@ test_that("rl_table rejects wrong input", {
   expect_error(rl_table(list()), regexp = "data frame")
   expect_error(rl_table(data.frame(a = 1)), regexp = "columns")
 })
+
+# -----------------------------------------------------------------------------
+# plot.nhpp_fit Tests
+# -----------------------------------------------------------------------------
+test_that("plot.nhpp_fit runs intensity plot without error", {
+  fit <- make_utils_fit()
+  expect_silent(plot(fit, type = "intensity"))
+})
+
+test_that("plot.nhpp_fit runs fitted plot for stationary shape model without error", {
+  fit <- make_utils_fit()
+  expect_silent(plot(fit, type = "fitted"))
+})
+
+test_that("plot.nhpp_fit runs fitted plot for non-stationary shape model without error", {
+  set.seed(1L)
+  n  <- 300L
+  df <- data.frame(
+    y     = c(stats::rexp(n, 0.3), stats::runif(30L, 5, 20)),
+    x     = stats::rnorm(n + 30L),
+    trend = seq_len(n + 30L) / (n + 30L)
+  )
+  fit_xi <- fit_nhpp(df, threshold = 4, loc_vars = "x", shape_vars = "trend",
+                     penalty = "none", verbose = FALSE)
+  expect_silent(plot(fit_xi, type = "fitted"))
+})
+
+test_that("plot.nhpp_fit rejects invalid plot type", {
+  fit <- make_utils_fit()
+  expect_error(plot(fit, type = "invalid_type"))
+})
