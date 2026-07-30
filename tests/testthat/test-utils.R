@@ -170,3 +170,22 @@ test_that("plot.nhpp_fit rejects invalid plot type", {
   fit <- make_utils_fit()
   expect_error(plot(fit, type = "invalid_type"))
 })
+
+test_that("plot.nhpp_fit handles completely stationary model for fitted plot", {
+  set.seed(1L)
+  n  <- 100L
+  df <- data.frame(y = c(stats::rexp(n, 0.3), stats::runif(20L, 5, 10)))
+  fit_stat <- fit_nhpp(df, threshold = 4, penalty = "none", verbose = FALSE)
+  expect_silent(plot(fit_stat, type = "fitted"))
+})
+
+test_that("plot.nhpp_fit plots non-stationary scale parameter in fitted plot", {
+  set.seed(1L)
+  n  <- 100L
+  df <- data.frame(
+    y = c(stats::rexp(n, 0.3), stats::runif(20L, 5, 10)),
+    x = stats::rnorm(n + 20L)
+  )
+  fit_sig <- fit_nhpp(df, threshold = 4, scale_vars = "x", penalty = "none", verbose = FALSE)
+  expect_silent(plot(fit_sig, type = "fitted"))
+})
