@@ -1,7 +1,7 @@
 Package: margEVT
 Type: Package
 Title: Regularized Point Processes and Stochastic Marginalization for Extremes
-Version: 0.1.0
+Version: 0.1.1
 Authors@R: c(
     person("Rodrigo Fonseca", "Villa", email = "rodrigo03.villa@gmail.com",
            role = c("aut", "cre"),

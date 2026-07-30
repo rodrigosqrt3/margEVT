@@ -14,6 +14,9 @@ treated as zero. Default \code{1e-4}.}
 
 \item{...}{Ignored.}
 }
+\value{
+Invisibly returns the input \code{nhpp_fit} object.
+}
 \description{
 Prints a structured summary of a fitted \code{nhpp_fit} object, including
 the penalty used, active coefficients, and basic model diagnostics.
