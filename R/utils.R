@@ -13,6 +13,8 @@
 #'   treated as zero. Default \code{1e-4}.
 #' @param ... Ignored.
 #'
+#' @return Invisibly returns the input \code{nhpp_fit} object.
+#'
 #' @export
 summary.nhpp_fit <- function(object, tol = 1e-4, ...) {
   cat("-- nhpp_fit summary --------------------------------------\n")
@@ -138,4 +140,85 @@ rl_table <- function(marg_result) {
   }))
 
   result
+}
+
+#' Plot diagnostics for a fitted nhpp_fit object
+#'
+#' Generates primary diagnostic plots for a fitted \code{nhpp_fit} model,
+#' including the cumulative intensity measure over time and parameter profiles.
+#'
+#' @param x An \code{nhpp_fit} object.
+#' @param type Character. Type of plot to generate: \code{"intensity"} (default)
+#'   for the cumulative intensity measure \eqn{\hat{\Lambda}(0,t)}, or
+#'   \code{"fitted"} for time-varying parameter profiles (\eqn{\mu(t)}, \eqn{\sigma(t)},
+#'   and \eqn{\xi(t)}).
+#' @param ... Additional graphical parameters passed to \code{\link[graphics]{plot}}.
+#'
+#' @return Invisibly returns \code{NULL}, called for side effects.
+#'
+#' @export
+plot.nhpp_fit <- function(x, type = c("intensity", "fitted"), ...) {
+  type <- match.arg(type)
+
+  mu_t  <- x$fitted$mu
+  sig_t <- x$fitted$sigma
+  xi_t  <- x$fitted$xi
+  u     <- x$threshold
+  n_y   <- x$obs_per_year
+
+  if (type == "intensity") {
+    z_u    <- 1 + xi_t * (u - mu_t) / sig_t
+    rate_t <- ifelse(
+      abs(xi_t) < 1e-6,
+      exp(pmax(-500, -(u - mu_t) / sig_t)),
+      ifelse(z_u <= 0, 0, exp((-1 / xi_t) * log(pmax(z_u, 1e-300))))
+    )
+
+    cum_intensity <- cumsum(rate_t) / n_y
+
+    graphics::plot(
+      cum_intensity, type = "l", col = "#2C3E50", lwd = 1.5,
+      main = "Integrated Intensity Measure Over Time",
+      xlab = "Observation Index (t)",
+      ylab = expression(hat(Lambda)(0, t)), ...
+    )
+    graphics::grid()
+
+  } else {
+    var_mu  <- length(unique(round(mu_t,  6L))) > 1L
+    var_sig <- length(unique(round(sig_t, 6L))) > 1L
+    var_xi  <- length(unique(round(xi_t,  6L))) > 1L
+
+    to_plot <- c(if (var_mu) "mu", if (var_sig) "sigma", if (var_xi) "xi")
+    if (length(to_plot) == 0L) {
+      to_plot <- c("mu", "sigma", "xi")
+    }
+
+    n_panels <- length(to_plot)
+    oldpar   <- graphics::par(mfrow = c(n_panels, 1L), mar = c(3.5, 4, 2, 1))
+    on.exit(graphics::par(oldpar))
+
+    if ("mu" %in% to_plot) {
+      graphics::plot(mu_t, type = "l", col = "#2C3E50", lwd = 1.2,
+                     main = expression("Fitted Location Parameter " * mu(t)),
+                     xlab = "Time Index", ylab = expression(mu(t)), ...)
+      graphics::grid()
+    }
+
+    if ("sigma" %in% to_plot) {
+      graphics::plot(sig_t, type = "l", col = "#E74C3C", lwd = 1.2,
+                     main = expression("Fitted Scale Parameter " * sigma(t)),
+                     xlab = "Time Index", ylab = expression(sigma(t)), ...)
+      graphics::grid()
+    }
+
+    if ("xi" %in% to_plot) {
+      graphics::plot(xi_t, type = "l", col = "#27AE60", lwd = 1.2,
+                     main = expression("Fitted Shape Parameter " * xi(t)),
+                     xlab = "Time Index", ylab = expression(xi(t)), ...)
+      graphics::grid()
+    }
+  }
+
+  invisible(NULL)
 }
