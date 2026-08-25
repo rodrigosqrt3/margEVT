@@ -22,8 +22,8 @@
 #' computed, and exceedance rates are compared to nominal rates via
 #' binomial tests. A Kolmogorov-Smirnov comparison on tail-conditional PIT
 #' values is returned as an exploratory diagnostic; it is not a formal test
-#' of global predictive calibration. Validation years below
-#' code{min_obs_year} observed values are excluded from binomial denominators.
+#' of global predictive calibration. Validation years with fewer than
+#' \code{min_obs_year} observed values are excluded from binomial denominators.
 #'
 #' @param fit An \code{nhpp_fit} object.
 #' @param data The data frame used to fit \code{fit}. Must contain columns
