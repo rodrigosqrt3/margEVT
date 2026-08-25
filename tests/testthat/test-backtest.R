@@ -52,6 +52,7 @@ test_that("binom_tests has one row per TR", {
                   n_boot = 20L, verbose = FALSE)
   expect_equal(nrow(res$binom_tests), 3L)
   expect_equal(res$binom_tests$TR, c(2, 5, 10))
+  expect_true("not_rejected" %in% names(res$binom_tests))
 })
 
 test_that("F_ann values are in [0, 1]", {
@@ -134,7 +135,7 @@ test_that("backtest supports verbose printing statement coverage", {
     backtest(s$fit, s$df, varname = "y", TRs = 2, n_obs = 50L,
              window_years = 10L, min_train_years = 15L,
              n_boot = 10L, verbose = TRUE),
-    regexp = "Binomial calibration tests"
+    regexp = "Nominal binomial rate comparisons"
   )
 })
 
@@ -219,6 +220,42 @@ test_that("backtest handles insufficient observations in validation year", {
 
   results_2015 <- res_sparse$results[res_sparse$results$year == 2015, ]
   expect_true(is.na(results_2015$F_ann))
+  expect_true(is.na(results_2015$exc_T2))
+})
+
+test_that("backtest validates return periods and window controls", {
+  s <- make_backtest_df()
+  expect_error(backtest(s$fit, s$df, "y", TRs = 1), "greater than 1")
+  expect_error(backtest(s$fit, s$df, "y", n_obs = 0), "n_obs")
+  expect_error(backtest(s$fit, s$df, "y", window_years = 0), "window_years")
+  expect_error(
+    backtest(s$fit, s$df, "y", min_train_years = 0),
+    "min_train_years"
+  )
+  expect_error(backtest(s$fit, s$df, "y", n_boot = 0), "n_boot")
+  expect_error(backtest(s$fit, s$df, "y", min_obs_year = 0), "min_obs_year")
+})
+
+test_that("backtest rejects a year column without valid values", {
+  s <- make_backtest_df()
+  bad <- s$df
+  bad$year <- NA_integer_
+  expect_error(
+    backtest(s$fit, bad, varname = "y", verbose = FALSE),
+    "contains no valid years"
+  )
+})
+
+test_that("backtest returns a non-estimable binomial row with no valid years", {
+  s <- make_backtest_df()
+  result <- backtest(
+    s$fit, s$df, varname = "y", TRs = 2, n_obs = 50L,
+    min_obs_year = 51L, window_years = 5L, min_train_years = 10L,
+    n_boot = 10L, verbose = FALSE
+  )
+  expect_equal(result$binom_tests$n_total, 0L)
+  expect_true(is.na(result$binom_tests$p_value))
+  expect_true(is.na(result$binom_tests$not_rejected))
 })
 
 test_that("backtest triggers 'No valid covariate blocks' and returns NULL if all skipped", {
@@ -292,9 +329,11 @@ test_that("backtest handles non-convergence in training window", {
   df_no_conv$y[1:10] <- NaN
 
   expect_message(
-    res <- backtest(s$fit, df_no_conv, varname = "y", TRs = 2, n_obs = 50L,
-                    window_years = 5L, min_train_years = 15L,
-                    n_boot = 10L, verbose = TRUE),
+    suppressWarnings(
+      res <- backtest(s$fit, df_no_conv, varname = "y", TRs = 2, n_obs = 50L,
+                      window_years = 5L, min_train_years = 15L,
+                      n_boot = 10L, verbose = TRUE)
+    ),
     regexp = "Did not converge, skipping window"
   )
   expect_null(res) # <-- Changed from expect_type(res, "list")

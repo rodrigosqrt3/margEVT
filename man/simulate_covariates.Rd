@@ -4,18 +4,20 @@
 \alias{simulate_covariates}
 \title{Simulate stationary covariate trajectories from a VAR generator}
 \usage{
-simulate_covariates(generator, n_mc, n_obs = 365L, burn_in = 300L, seed = NULL)
+simulate_covariates(generator, n_mc, n_obs = NULL, burn_in = 300L, seed = NULL)
 }
 \arguments{
 \item{generator}{Object from \code{\link{fit_var_generator}}. If
 \code{NULL}, returns \code{NULL} (stationary/no-covariate model).}
 
-\item{n_mc}{Integer. Number of simulated years.}
+\item{n_mc}{Integer. Number of independently simulated annual trajectories.}
 
-\item{n_obs}{Integer. Observations per simulated year. Default \code{365L}.}
+\item{n_obs}{Integer observations per simulated year. If \code{NULL},
+uses the rounded seasonal period stored in \code{generator}.}
 
-\item{burn_in}{Integer. Burn-in to discard transient VAR dynamics.
-Default \code{300L}.}
+\item{burn_in}{Integer. Burn-in applied separately to each trajectory to
+reduce transient VAR dynamics. Default \code{300L}; adequacy should be
+assessed for highly persistent fitted systems.}
 
 \item{seed}{Integer. Random seed. Default \code{NULL} (not set).}
 }

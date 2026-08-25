@@ -4,7 +4,7 @@
 \alias{fit_var_generator}
 \title{Fit a generic VAR generator over a model's active covariates}
 \usage{
-fit_var_generator(fit, data, vars = NULL, period = 365.25, lag_max = NULL)
+fit_var_generator(fit, data, vars = NULL, period = NULL, lag_max = NULL)
 }
 \arguments{
 \item{fit}{An \code{nhpp_fit} object.}
@@ -17,15 +17,16 @@ you already have them).}
 \code{NULL}: uses \code{active_covariates(fit)}, intersected with
 \code{names(data)}.}
 
-\item{period}{Numeric. Seasonal period in observations. Default
-\code{365.25}.}
+\item{period}{Numeric seasonal period in observations. If \code{NULL},
+inherits \code{fit$obs_per_year}; legacy objects fall back to \code{365.25}.}
 
 \item{lag_max}{Integer. Max VAR lag considered by \code{VARselect}.
 Default \code{NULL}: \code{min(5, floor(n / (3*K)))}.}
 }
 \value{
-An object of class \code{nhpp_var_generator}, or \code{NULL}
-  (with a warning) if the model has no active covariates.
+An object of class \code{nhpp_var_generator}, including the fitted
+  root moduli and spectral radius, or \code{NULL} (with a warning) if the
+  model has no active covariates. An unstable selected VAR causes an error.
 }
 \description{
 Deseasonalizes each active covariate column in \code{data} (regressing

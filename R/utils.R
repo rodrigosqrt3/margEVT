@@ -3,6 +3,45 @@
 # Small shared utilities.
 # =============================================================================
 
+.with_preserved_seed <- function(seed, code) {
+  had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  if (had_seed)
+    old_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+
+  on.exit({
+    if (had_seed) {
+      assign(".Random.seed", old_seed, envir = .GlobalEnv)
+    } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+      rm(".Random.seed", envir = .GlobalEnv)
+    }
+  }, add = TRUE)
+
+  set.seed(seed)
+  force(code)
+}
+
+.penalized_parameter_indices <- function(fit) {
+  dm <- fit$dm
+  if (is.null(dm) || is.null(dm$X_mu) || is.null(dm$X_sigma) || is.null(dm$X_xi))
+    return(NULL)
+
+  p_mu  <- ncol(dm$X_mu)
+  p_sig <- ncol(dm$X_sigma)
+  unique(c(
+    dm$idx_pen_mu,
+    p_mu + dm$idx_pen_sigma,
+    if (isTRUE(fit$penalize_shape)) p_mu + p_sig + dm$idx_pen_xi else integer(0L)
+  ))
+}
+
+.active_parameter_mask <- function(fit, tol) {
+  pen_idx <- .penalized_parameter_indices(fit)
+  if (is.null(pen_idx)) return(abs(fit$par) > tol)
+  keep <- rep(TRUE, length(fit$par))
+  keep[pen_idx] <- abs(fit$par[pen_idx]) > tol
+  keep
+}
+
 #' Summarise a fitted nhpp_fit model
 #'
 #' Prints a structured summary of a fitted \code{nhpp_fit} object, including
@@ -10,13 +49,14 @@
 #'
 #' @param object An \code{nhpp_fit} object.
 #' @param tol Numeric. Coefficients smaller than this in absolute value are
-#'   treated as zero. Default \code{1e-4}.
+#'   treated as zero. If \code{NULL}, inherits \code{object$active_tol};
+#'   legacy objects fall back to \code{1e-2}.
 #' @param ... Ignored.
 #'
 #' @return Invisibly returns the input \code{nhpp_fit} object.
 #'
 #' @export
-summary.nhpp_fit <- function(object, tol = 1e-4, ...) {
+summary.nhpp_fit <- function(object, tol = NULL, ...) {
   cat("-- nhpp_fit summary --------------------------------------\n")
   cat(sprintf("  Threshold      : %.4g\n",  object$threshold))
   cat(sprintf("  Penalty        : %s\n",    object$penalty))
@@ -28,9 +68,16 @@ summary.nhpp_fit <- function(object, tol = 1e-4, ...) {
   cat(sprintf("  nllh (raw)     : %.4f\n",  object$nllh_raw))
   cat(sprintf("  nllh (pen)     : %.4f\n",  object$nllh_pen))
 
+  tol <- if (is.null(tol)) {
+    if (is.null(object$active_tol)) 1e-2 else object$active_tol
+  } else tol
+  if (!is.numeric(tol) || length(tol) != 1L || !is.finite(tol) || tol <= 0)
+    stop("summary.nhpp_fit: `tol` must be a single positive numeric value.")
+
   par      <- object$par
-  active   <- par[abs(par) >  tol]
-  inactive <- par[abs(par) <= tol]
+  keep     <- .active_parameter_mask(object, tol)
+  active   <- par[keep]
+  inactive <- par[!keep]
 
   cat(sprintf("\n  Active coefficients (%d of %d):\n",
               length(active), length(par)))
@@ -69,18 +116,24 @@ summary.nhpp_fit <- function(object, tol = 1e-4, ...) {
 #'
 #' @param fit An \code{nhpp_fit} object.
 #' @param tol Numeric. Coefficients smaller than this are counted as zero
-#'   for the active parameter count. Default \code{1e-2}.
+#'   for the active parameter count. If \code{NULL}, inherits
+#'   \code{fit$active_tol}; legacy objects fall back to \code{1e-2}.
 #'
 #' @return Numeric scalar. BIC value.
 #'
 #' @export
-bic_nhpp <- function(fit, tol = 1e-2) {
+bic_nhpp <- function(fit, tol = NULL) {
   if (!inherits(fit, "nhpp_fit"))
     stop("bic_nhpp: `fit` must be an nhpp_fit object.")
   if (!is.finite(fit$nllh_raw))
     return(NA_real_)
+  tol <- if (is.null(tol)) {
+    if (is.null(fit$active_tol)) 1e-2 else fit$active_tol
+  } else tol
+  if (!is.numeric(tol) || length(tol) != 1L || !is.finite(tol) || tol <= 0)
+    stop("bic_nhpp: `tol` must be a single positive numeric value.")
 
-  k_active <- sum(abs(fit$par) > tol)
+  k_active <- sum(.active_parameter_mask(fit, tol))
   2 * fit$nllh_raw + k_active * log(fit$n_exc)
 }
 

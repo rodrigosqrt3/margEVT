@@ -7,8 +7,8 @@
 build_cov_annual(
   fit,
   cov_vals = list(),
-  n_obs = 365L,
-  period = 365.25,
+  n_obs = NULL,
+  period = NULL,
   interactions = list()
 )
 }
@@ -19,11 +19,11 @@ build_cov_annual(
 a scalar (replicated to \code{n_obs} rows) or a vector of length
 \code{n_obs}.}
 
-\item{n_obs}{Integer. Number of rows (time points) to generate.
-Typically \code{365L} for one year of daily data.}
+\item{n_obs}{Integer number of rows (time points) to generate. If
+\code{NULL}, uses the rounded \code{fit$obs_per_year} value.}
 
-\item{period}{Numeric. Period for the seasonal harmonics in days.
-Default \code{365.25}.}
+\item{period}{Numeric seasonal period in observations. If \code{NULL},
+inherits \code{fit$obs_per_year}; legacy objects fall back to \code{365.25}.}
 
 \item{interactions}{Named list of length-2 character vectors declaring
 interaction columns to compute. Each element is
@@ -39,6 +39,6 @@ A data frame with \code{n_obs} rows and all columns required
 Constructs a data frame with \code{n_obs} rows containing all columns
 required by a fitted \code{nhpp_fit} model. Seasonality columns
 (\code{cos1}, \code{sen1}, \code{cos2}, \code{sen2}) are computed
-automatically from \code{n_obs}. Any other required column is filled
+automatically using \code{period}. Any other required column is filled
 from \code{cov_vals}, or set to zero with a warning if absent.
 }

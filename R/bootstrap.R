@@ -6,9 +6,9 @@
 #   - bootstrap_rl()   : CI for return levels
 #   - bootstrap_coef() : CI for model coefficients
 #
-# Both refit at the SAME lambda/alpha as the original fit — never re-run
-# BIC selection on bootstrap samples (that would be double shrinkage and
-# produce artificially narrow CIs).
+# Both refit at the SAME lambda/alpha and activity tolerance as the original
+# fit. The resulting intervals are conditional on the selected specification;
+# they do not propagate model-selection uncertainty.
 #
 # Internal workhorse:
 #   - .simulate_exceedances() : simulate new exceedances from fitted GPD
@@ -51,8 +51,7 @@
 .refit_boot <- function(df_boot, fit) {
 
   dm       <- fit$dm
-  loc_vars  <- colnames(dm$X_mu)[!colnames(dm$X_mu) %in%
-                                   c("(Intercept)", "cos1", "sen1", "cos2", "sen2")]
+  loc_vars  <- colnames(dm$X_mu)[colnames(dm$X_mu) != "(Intercept)"]
   sig_vars  <- colnames(dm$X_sigma)[colnames(dm$X_sigma) != "(Intercept)"]
   xi_vars   <- colnames(dm$X_xi)[colnames(dm$X_xi)   != "(Intercept)"]
 
@@ -60,12 +59,18 @@
   sig_vars  <- if (length(sig_vars) == 0L) NULL else sig_vars
   xi_vars   <- if (length(xi_vars)  == 0L) NULL else xi_vars
 
-  # free_vars: columns in X_mu that are NOT in idx_pen_mu
-  # (i.e. they were declared free in the original fit)
-  all_mu_cols  <- colnames(dm$X_mu)
-  penalized_mu <- all_mu_cols[dm$idx_pen_mu]
-  free_vars    <- setdiff(all_mu_cols,
-                          c("(Intercept)", penalized_mu))
+  # Reconstruct the union of unpenalized columns across all parameter blocks.
+  # This preserves mandatory seasonal terms and any user-specified free
+  # variables in exactly the same model design used by the original fit.
+  free_in_block <- function(X, idx_pen) {
+    cols <- colnames(X)
+    setdiff(cols, c("(Intercept)", cols[idx_pen]))
+  }
+  free_vars <- unique(c(
+    free_in_block(dm$X_mu, dm$idx_pen_mu),
+    free_in_block(dm$X_sigma, dm$idx_pen_sigma),
+    free_in_block(dm$X_xi, dm$idx_pen_xi)
+  ))
   free_vars    <- if (length(free_vars) == 0L) NULL else free_vars
 
   tryCatch(
@@ -79,6 +84,7 @@
              lambda         = fit$lambda,
              penalize_shape = fit$penalize_shape,
              obs_per_year   = fit$obs_per_year,
+             active_tol     = if (is.null(fit$active_tol)) 1e-2 else fit$active_tol,
              maxit          = 5000L,
              calc_hessian   = FALSE,
              verbose        = FALSE),
@@ -94,8 +100,11 @@
 #' Parametric bootstrap confidence intervals for return levels
 #'
 #' Simulates \code{R} bootstrap samples from the fitted model, refits at the
-#' original penalty and lambda, recomputes return levels via
-#' \code{\link{marginalize}}, and returns empirical quantile CIs.
+#' original model design, penalty, lambda, and activity tolerance, recomputes
+#' return levels via \code{\link{marginalize}}, and returns empirical quantile
+#' intervals. Exceedance count and times are held fixed, so the result is a
+#' nominal conditional summary rather than unconditional or post-selection
+#' inference.
 #'
 #' @param fit An \code{nhpp_fit} object.
 #' @param data The data frame used to fit \code{fit}. Must contain column
@@ -111,7 +120,8 @@
 #' @param seed Integer. Random seed. Default \code{42L}.
 #' @param verbose Logical. Print progress. Default \code{TRUE}.
 #'
-#' @return A data frame with columns \code{TR}, \code{RL_est},
+#' @return A data frame with columns \code{TR}, \code{RL_est} (the return
+#'   level from the original fitted model under the requested approach),
 #'   \code{CI_low}, \code{CI_high}, \code{n_ok} (number of successful
 #'   replicates).
 #'
@@ -131,6 +141,15 @@ bootstrap_rl <- function(fit, data,
     stop("bootstrap_rl: `data` must be a data frame.")
   if (!approach %in% c("A", "B", "C"))
     stop("bootstrap_rl: `approach` must be one of 'A', 'B', 'C'.")
+  if (!is.numeric(TRs) || length(TRs) < 1L ||
+      any(!is.finite(TRs)) || any(TRs <= 1))
+    stop("bootstrap_rl: `TRs` must contain finite return periods greater than 1.")
+  if (!is.numeric(R) || length(R) != 1L || !is.finite(R) || R < 1)
+    stop("bootstrap_rl: `R` must be a positive integer.")
+  if (!is.numeric(level) || length(level) != 1L ||
+      !is.finite(level) || level <= 0 || level >= 1)
+    stop("bootstrap_rl: `level` must lie strictly between 0 and 1.")
+  R <- as.integer(R)
 
   set.seed(seed)
 
@@ -150,6 +169,33 @@ bootstrap_rl <- function(fit, data,
   boot_mat   <- matrix(NA_real_, nrow = R, ncol = length(TRs),
                        dimnames = list(NULL, paste0("T", TRs)))
 
+  effective_marginalize_args <- marginalize_args
+  if (approach == "A" && !"scenarios" %in% names(marginalize_args)) {
+    ac <- active_covariates(fit)
+    interaction_inputs <- if ("interactions" %in% names(marginalize_args))
+      unique(unlist(marginalize_args$interactions, use.names = FALSE)) else
+        character(0L)
+    scenario_vars <- unique(c(ac, interaction_inputs))
+    scenario_vars <- scenario_vars[scenario_vars %in% names(data)]
+    default_sc <- stats::setNames(
+      lapply(scenario_vars, function(v) mean(data[[v]], na.rm = TRUE)),
+      scenario_vars
+    )
+    effective_marginalize_args$scenarios <- list(mean = default_sc)
+  }
+
+  point_args <- utils::modifyList(
+    effective_marginalize_args,
+    list(fit = fit, data = data, TRs = TRs, approaches = approach)
+  )
+  point_result <- tryCatch(do.call(marginalize, point_args),
+                           error = function(e) NULL)
+  point_est <- vapply(TRs, function(tr) {
+    if (is.null(point_result)) return(NA_real_)
+    value <- point_result$RL[point_result$TR == tr]
+    if (length(value) == 0L) NA_real_ else value[1L]
+  }, numeric(1L))
+
   if (verbose)
     message(sprintf("bootstrap_rl: R=%d | approach=%s | level=%.0f%%",
                     R, approach, level * 100))
@@ -166,27 +212,9 @@ bootstrap_rl <- function(fit, data,
     fit_b <- .refit_boot(df_boot, fit)
     if (is.null(fit_b) || !fit_b$converged) next
 
-    # For approach A with no user-supplied scenarios: build a default
-    # scenario from df_boot column means to avoid spurious warnings
-    marg_args_b <- marginalize_args
-    if (approach == "A" && !"scenarios" %in% names(marginalize_args)) {
-      ac <- active_covariates(fit_b)
-      if (!is.null(ac)) {
-        ac_in_boot <- ac[ac %in% names(df_boot)]
-        names(ac_in_boot) <- ac_in_boot
-        default_sc <- lapply(ac_in_boot, function(v)
-          mean(df_boot[[v]], na.rm = TRUE))
-        marg_args_b <- c(marg_args_b,
-                         list(scenarios = list(mean = default_sc)))
-      }
-    }
-
-    marg_args <- c(
-      list(fit       = fit_b,
-           data      = df_boot,
-           TRs       = TRs,
-           approaches = approach),
-      marg_args_b
+    marg_args <- utils::modifyList(
+      effective_marginalize_args,
+      list(fit = fit_b, data = df_boot, TRs = TRs, approaches = approach)
     )
     rl_b <- tryCatch(do.call(marginalize, marg_args), error = function(e) NULL)
     if (is.null(rl_b)) next
@@ -202,7 +230,7 @@ bootstrap_rl <- function(fit, data,
     v <- stats::na.omit(boot_mat[, ti])
     data.frame(
       TR       = TRs[ti],
-      RL_est   = if (length(v) > 0L) round(mean(v),                    4L) else NA_real_,
+      RL_est   = round(point_est[ti], 4L),
       CI_low   = if (length(v) > 0L) round(stats::quantile(v, alpha_tail),  4L) else NA_real_,
       CI_high  = if (length(v) > 0L) round(stats::quantile(v, 1 - alpha_tail), 4L) else NA_real_,
       n_ok     = length(v)
@@ -223,8 +251,8 @@ bootstrap_rl <- function(fit, data,
 #' @inheritParams bootstrap_rl
 #'
 #' @return A data frame with columns \code{parameter}, \code{estimate},
-#'   \code{CI_low}, \code{CI_high}, \code{n_ok}. Only parameters with
-#'   non-negligible estimates (\code{|estimate| > 1e-4}) are returned.
+#'   \code{CI_low}, \code{CI_high}, \code{n_ok}, with one row for every
+#'   coefficient in the fitted model.
 #'
 #' @export
 bootstrap_coef <- function(fit, data,
@@ -237,6 +265,12 @@ bootstrap_coef <- function(fit, data,
     stop("bootstrap_coef: `fit` must be an nhpp_fit object.")
   if (!is.data.frame(data))
     stop("bootstrap_coef: `data` must be a data frame.")
+  if (!is.numeric(R) || length(R) != 1L || !is.finite(R) || R < 1)
+    stop("bootstrap_coef: `R` must be a positive integer.")
+  if (!is.numeric(level) || length(level) != 1L ||
+      !is.finite(level) || level <= 0 || level >= 1)
+    stop("bootstrap_coef: `level` must lie strictly between 0 and 1.")
+  R <- as.integer(R)
 
   set.seed(seed)
 

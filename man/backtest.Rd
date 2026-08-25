@@ -9,7 +9,8 @@ backtest(
   data,
   varname,
   TRs = c(2, 5, 10),
-  n_obs = 365L,
+  n_obs = NULL,
+  period = NULL,
   window_years = 5L,
   min_train_years = 10L,
   n_boot = 200L,
@@ -32,7 +33,11 @@ for validation.}
 \item{TRs}{Numeric vector of return periods to evaluate. Default
 \code{c(2, 5, 10)}.}
 
-\item{n_obs}{Integer. Observations per year. Default \code{365L}.}
+\item{n_obs}{Integer observations per year. If \code{NULL}, uses the
+rounded \code{fit$obs_per_year} value.}
+
+\item{period}{Numeric seasonal period in observations. If \code{NULL},
+inherits \code{fit$obs_per_year}.}
 
 \item{window_years}{Integer. Width of each validation window in years.
 Default \code{5L}.}
@@ -58,15 +63,21 @@ A list with three elements:
   \item{results}{Data frame with one row per validation year, containing
     the observed annual maximum, PIT value, and exceedance indicators for
     each return period.}
-  \item{binom_tests}{Data frame with binomial test results for each TR.}
-  \item{ks_test}{Data frame with KS test result for PIT calibration,
-    or \code{NULL} if fewer than 5 validation years had events.}
+  \item{binom_tests}{Data frame with nominal binomial comparisons for each
+    TR. The \code{not_rejected} field is the recommended interpretation;
+    \code{calibrated} is retained as a legacy alias.}
+  \item{ks_test}{Data frame with the exploratory tail-conditional PIT
+    KS comparison, including \code{not_rejected} and the legacy
+    \code{calibrated} alias, or \code{NULL} if fewer than 5 validation
+    years had events.}
 }
 \description{
 Evaluates predictive performance of a fitted \code{nhpp_fit} model via
 walk-forward cross-validation. For each window, the model is refit on
 training data at the original penalty and lambda, return levels are
 computed, and exceedance rates are compared to nominal rates via
-binomial tests. Probabilistic calibration is assessed via a
-Kolmogorov-Smirnov test on the PIT values.
+binomial tests. A Kolmogorov-Smirnov comparison on tail-conditional PIT
+values is returned as an exploratory diagnostic; it is not a formal test
+of global predictive calibration. Validation years below
+code{min_obs_year} observed values are excluded from binomial denominators.
 }

@@ -74,6 +74,33 @@ test_that("bootstrap_coef estimates match fit$par", {
                unname(round(s$fit$par[res$parameter], 5L)))
 })
 
+test_that("bootstrap refits preserve the original design and free variables", {
+  set.seed(11L)
+  n <- 500L
+  tt <- seq_len(n)
+  df <- data.frame(
+    y = c(stats::rexp(n - 40L, 0.3), stats::runif(40L, 5, 20)),
+    x = stats::rnorm(n),
+    cos1 = cos(2 * pi * tt / 100),
+    sen1 = sin(2 * pi * tt / 100)
+  )
+  fit <- fit_nhpp(
+    df, threshold = 4,
+    loc_vars = c("cos1", "sen1", "x"),
+    scale_vars = c("cos1", "x"),
+    free_vars = c("cos1", "sen1"),
+    penalty = "lasso", lambda = 0.5,
+    obs_per_year = 100, verbose = FALSE
+  )
+
+  fit_b <- margEVT:::.refit_boot(df, fit)
+  expect_s3_class(fit_b, "nhpp_fit")
+  expect_identical(colnames(fit_b$dm$X_mu), colnames(fit$dm$X_mu))
+  expect_identical(colnames(fit_b$dm$X_sigma), colnames(fit$dm$X_sigma))
+  expect_identical(fit_b$dm$idx_pen_mu, fit$dm$idx_pen_mu)
+  expect_identical(fit_b$dm$idx_pen_sigma, fit$dm$idx_pen_sigma)
+})
+
 test_that("bootstrap_rl and bootstrap_coef input validations", {
   s <- make_boot_fit()
   expect_error(bootstrap_rl(list(), data.frame()), regexp = "nhpp_fit")
@@ -81,6 +108,11 @@ test_that("bootstrap_rl and bootstrap_coef input validations", {
   expect_error(bootstrap_rl(s$fit, list(), TRs = 10, R = 2), regexp = "must be a data frame")
   expect_error(bootstrap_coef(s$fit, list(), R = 2), regexp = "must be a data frame")
   expect_error(bootstrap_rl(s$fit, s$df, TRs = 10, R = 2, approach = "Z"), regexp = "must be one of 'A', 'B', 'C'")
+  expect_error(bootstrap_rl(s$fit, s$df, TRs = 1, R = 2), regexp = "greater than 1")
+  expect_error(bootstrap_rl(s$fit, s$df, TRs = 10, R = 0), regexp = "positive integer")
+  expect_error(bootstrap_rl(s$fit, s$df, TRs = 10, R = 2, level = 1), regexp = "between 0 and 1")
+  expect_error(bootstrap_coef(s$fit, s$df, R = 0), regexp = "positive integer")
+  expect_error(bootstrap_coef(s$fit, s$df, R = 2, level = 1), regexp = "between 0 and 1")
 
   df_few <- s$df
   df_few$y <- 0

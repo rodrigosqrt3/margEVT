@@ -40,12 +40,16 @@ replicate: \code{"A"}, \code{"B"}, or \code{"C"}. Default \code{"C"}.}
 \item{verbose}{Logical. Print progress. Default \code{TRUE}.}
 }
 \value{
-A data frame with columns \code{TR}, \code{RL_est},
+A data frame with columns \code{TR}, \code{RL_est} (the return
+  level from the original fitted model under the requested approach),
   \code{CI_low}, \code{CI_high}, \code{n_ok} (number of successful
   replicates).
 }
 \description{
 Simulates \code{R} bootstrap samples from the fitted model, refits at the
-original penalty and lambda, recomputes return levels via
-\code{\link{marginalize}}, and returns empirical quantile CIs.
+original model design, penalty, lambda, and activity tolerance, recomputes
+return levels via \code{\link{marginalize}}, and returns empirical quantile
+intervals. Exceedance count and times are held fixed, so the result is a
+nominal conditional summary rather than unconditional or post-selection
+inference.
 }

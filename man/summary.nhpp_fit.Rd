@@ -4,13 +4,14 @@
 \alias{summary.nhpp_fit}
 \title{Summarise a fitted nhpp_fit model}
 \usage{
-\method{summary}{nhpp_fit}(object, tol = 1e-04, ...)
+\method{summary}{nhpp_fit}(object, tol = NULL, ...)
 }
 \arguments{
 \item{object}{An \code{nhpp_fit} object.}
 
 \item{tol}{Numeric. Coefficients smaller than this in absolute value are
-treated as zero. Default \code{1e-4}.}
+treated as zero. If \code{NULL}, inherits \code{object$active_tol};
+legacy objects fall back to \code{1e-2}.}
 
 \item{...}{Ignored.}
 }

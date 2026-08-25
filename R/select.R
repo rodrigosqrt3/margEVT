@@ -22,6 +22,7 @@
 #' @param penalize_shape Logical.
 #' @param init Named numeric starting parameter vector.
 #' @param obs_per_year Numeric.
+#' @param active_tol Positive numeric tolerance for BIC complexity counting.
 #' @param maxit Integer.
 #' @param verbose Logical.
 #'
@@ -31,6 +32,7 @@
 .select_lambda_bic <- function(dm, y, threshold, alpha,
                                penalize_shape, init,
                                obs_per_year = 365.25,
+                               active_tol   = 1e-2,
                                maxit        = 5000L,
                                verbose      = TRUE) {
 
@@ -92,7 +94,7 @@
 
     par_hat <- res$par
     # Hard threshold near-zero coefficients for BIC counting
-    for (j in pen_idx_all) if (abs(par_hat[j]) < 1e-2) par_hat[j] <- 0
+    for (j in pen_idx_all) if (abs(par_hat[j]) < active_tol) par_hat[j] <- 0
     k_active <- sum(par_hat[pen_idx_all] != 0) +
       (length(par_hat) - length(pen_idx_all))
     bic <- 2 * res$nllh_raw + k_active * log(n_exc)

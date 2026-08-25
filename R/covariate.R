@@ -16,17 +16,17 @@
 #' Constructs a data frame with \code{n_obs} rows containing all columns
 #' required by a fitted \code{nhpp_fit} model. Seasonality columns
 #' (\code{cos1}, \code{sen1}, \code{cos2}, \code{sen2}) are computed
-#' automatically from \code{n_obs}. Any other required column is filled
+#' automatically using \code{period}. Any other required column is filled
 #' from \code{cov_vals}, or set to zero with a warning if absent.
 #'
 #' @param fit An \code{nhpp_fit} object.
 #' @param cov_vals Named list of covariate values. Each element is either
 #'   a scalar (replicated to \code{n_obs} rows) or a vector of length
 #'   \code{n_obs}.
-#' @param n_obs Integer. Number of rows (time points) to generate.
-#'   Typically \code{365L} for one year of daily data.
-#' @param period Numeric. Period for the seasonal harmonics in days.
-#'   Default \code{365.25}.
+#' @param n_obs Integer number of rows (time points) to generate. If
+#'   \code{NULL}, uses the rounded \code{fit$obs_per_year} value.
+#' @param period Numeric seasonal period in observations. If \code{NULL},
+#'   inherits \code{fit$obs_per_year}; legacy objects fall back to \code{365.25}.
 #' @param interactions Named list of length-2 character vectors declaring
 #'   interaction columns to compute. Each element is
 #'   \code{c("col_A", "col_B")} and the interaction column is their product.
@@ -37,13 +37,36 @@
 #'   by \code{fit}.
 #'
 #' @export
-build_cov_annual <- function(fit, cov_vals = list(), n_obs = 365L,
-                             period = 365.25, interactions = list()) {
+build_cov_annual <- function(fit, cov_vals = list(), n_obs = NULL,
+                             period = NULL, interactions = list()) {
 
   if (!inherits(fit, "nhpp_fit"))
     stop("build_cov_annual: `fit` must be an nhpp_fit object.")
+  if (!is.list(interactions) ||
+      (length(interactions) > 0L &&
+       (is.null(names(interactions)) || any(names(interactions) == "") ||
+        anyDuplicated(names(interactions)))))
+    stop("build_cov_annual: `interactions` must be a named list with unique names.")
+  invalid_interactions <- names(interactions)[
+    vapply(interactions, length, integer(1L)) != 2L
+  ]
+  if (length(invalid_interactions) > 0L)
+    stop(sprintf(
+      "build_cov_annual: interaction '%s' must name exactly 2 columns.",
+      invalid_interactions[1L]
+    ))
 
-  n_obs <- as.integer(n_obs)
+  n_obs <- if (is.null(n_obs)) {
+    as.integer(round(if (is.null(fit$obs_per_year)) 365.25 else fit$obs_per_year))
+  } else as.integer(n_obs)
+  if (!is.finite(n_obs) || n_obs < 1L)
+    stop("build_cov_annual: `n_obs` must be a positive integer.")
+  period <- if (is.null(period)) {
+    if (is.null(fit$obs_per_year)) 365.25 else fit$obs_per_year
+  } else period
+  if (!is.numeric(period) || length(period) != 1L ||
+      !is.finite(period) || period <= 0)
+    stop("build_cov_annual: `period` must be a single positive numeric value.")
 
   t_grid <- seq_len(n_obs)
   df <- data.frame(
@@ -63,34 +86,47 @@ build_cov_annual <- function(fit, cov_vals = list(), n_obs = 365L,
 
   interaction_output_cols <- names(interactions)
 
-  known_at_this_point <- c(names(df), names(cov_vals))
-  for (nm in names(interactions)) {
-    cols <- interactions[[nm]]
-    if (length(cols) != 2L)
+  add_covariate <- function(v) {
+    val <- cov_vals[[v]]
+    if (!is.atomic(val) || !is.numeric(val) ||
+        !length(val) %in% c(1L, n_obs) || any(!is.finite(val)))
       stop(sprintf(
-        "build_cov_annual: interaction '%s' must name exactly 2 columns.", nm
+        paste0(
+          "build_cov_annual: covariate '%s' must be a finite numeric ",
+          "scalar or a vector of length n_obs (%d)."
+        ),
+        v, n_obs
       ))
-    missing_inter <- setdiff(cols, known_at_this_point)
-    if (length(missing_inter) > 0L)
-      stop(sprintf(
-        "build_cov_annual: interaction '%s' requires column(s) not available: %s",
-        nm, paste(missing_inter, collapse = ", ")
-      ))
+    df[[v]] <<- if (length(val) == n_obs) val else rep(val, n_obs)
   }
 
+  interaction_inputs <- unique(unlist(interactions, use.names = FALSE))
+  for (v in interaction_inputs) {
+    if (v %in% names(df)) next
+    if (!v %in% names(cov_vals))
+      stop(sprintf(
+        "build_cov_annual: interaction input '%s' is absent from `cov_vals`.", v
+      ))
+    add_covariate(v)
+  }
+
+  missing_covariates <- character(0L)
   for (v in need_cols) {
     if (v %in% names(df)) next
     if (v %in% interaction_output_cols) next
     if (v %in% names(cov_vals)) {
-      val     <- cov_vals[[v]]
-      df[[v]] <- if (length(val) == n_obs) val else rep(val[[1L]], n_obs)
+      add_covariate(v)
     } else {
       df[[v]] <- 0
-      warning(sprintf(
-        "build_cov_annual: column '%s' not in cov_vals-filled with 0.", v
-      ))
+      missing_covariates <- c(missing_covariates, v)
     }
   }
+
+  if (length(missing_covariates) > 0L)
+    warning(sprintf(
+      "build_cov_annual: column(s) %s not in `cov_vals`; filled with 0.",
+      paste(sprintf("'%s'", missing_covariates), collapse = ", ")
+    ))
 
   for (nm in names(interactions)) {
     cols    <- interactions[[nm]]
@@ -112,16 +148,22 @@ build_cov_annual <- function(fit, cov_vals = list(), n_obs = 365L,
 #'   the result (intercept and seasonality terms are always excluded).
 #'   Default \code{NULL}.
 #' @param tol Numeric. Coefficients smaller than this in absolute value are
-#'   treated as zero (LASSO shrinkage). Default \code{1e-4}.
+#'   treated as zero. If \code{NULL}, inherits \code{fit$active_tol}; legacy
+#'   objects fall back to \code{1e-2}.
 #'
 #' @return Character vector of active covariate names, or \code{NULL} if
 #'   the model has no active non-seasonal covariates.
 #'
 #' @export
-active_covariates <- function(fit, free_cols = NULL, tol = 1e-4) {
+active_covariates <- function(fit, free_cols = NULL, tol = NULL) {
 
   if (!inherits(fit, "nhpp_fit"))
     stop("active_covariates: `fit` must be an nhpp_fit object.")
+  tol <- if (is.null(tol)) {
+    if (is.null(fit$active_tol)) 1e-2 else fit$active_tol
+  } else tol
+  if (!is.numeric(tol) || length(tol) != 1L || !is.finite(tol) || tol <= 0)
+    stop("active_covariates: `tol` must be a single positive numeric value.")
 
   always_exclude <- c("(Intercept)", "cos1", "sen1", "cos2", "sen2", free_cols)
 

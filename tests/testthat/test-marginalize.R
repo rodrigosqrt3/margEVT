@@ -54,6 +54,60 @@ test_that("return levels increase with return period", {
   expect_true(all(diff(res$RL) > 0))
 })
 
+test_that("tail measure respects lower and upper GEV endpoints", {
+  lower_endpoint <- margEVT:::.tail_measure_at_level(
+    z = -6, mu_t = 0, sigma_t = 1, xi_t = 0.2
+  )
+  upper_endpoint <- margEVT:::.tail_measure_at_level(
+    z = 6, mu_t = 0, sigma_t = 1, xi_t = -0.2
+  )
+
+  expect_identical(lower_endpoint, Inf)
+  expect_identical(upper_endpoint, 0)
+})
+
+test_that("annual probabilities use the correct endpoint convention", {
+  below_lower <- margEVT:::.annual_exceedance_prob(
+    z = -6, mu_t = 0, sigma_t = 1, xi_t = 0.2, n_obs = 1L
+  )
+  above_upper <- margEVT:::.annual_exceedance_prob(
+    z = 6, mu_t = 0, sigma_t = 1, xi_t = -0.2, n_obs = 1L
+  )
+
+  expect_identical(below_lower, 0)
+  expect_identical(above_upper, 1)
+})
+
+test_that("annual probabilities reject malformed trajectory stacks", {
+  expect_error(
+    margEVT:::.annual_exceedance_prob(
+      z = 1, mu_t = 1:3, sigma_t = rep(1, 3), xi_t = rep(0, 3),
+      n_obs = 2L
+    ),
+    regexp = "divisible"
+  )
+})
+
+test_that("return-level search does not extrapolate below the threshold", {
+  root <- margEVT:::.find_return_level(
+    TR = 2,
+    f_annual = function(z) 0.9,
+    z_lo = 10,
+    z_hi = 20
+  )
+  expect_true(is.na(root))
+})
+
+test_that("return-level search expands only the upper bracket", {
+  root <- margEVT:::.find_return_level(
+    TR = 10,
+    f_annual = stats::plogis,
+    z_lo = 0,
+    z_hi = 1
+  )
+  expect_equal(root, stats::qlogis(0.9), tolerance = 1e-4)
+})
+
 test_that("approach C returns correct structure", {
   s   <- make_stationary_fit()
   res <- marginalize(s$fit, s$df, TRs = c(10, 50),
@@ -124,6 +178,63 @@ test_that("marginalize rejects invalid inputs", {
   s <- make_stationary_fit()
   expect_error(marginalize(list(), s$df), regexp = "must be an nhpp_fit object")
   expect_error(marginalize(s$fit, list()), regexp = "must be a data frame")
+  expect_error(marginalize(s$fit, s$df, TRs = 1), regexp = "greater than 1")
+  expect_error(marginalize(s$fit, s$df, approaches = "D"), regexp = "only 'A', 'B', or 'C'")
+  expect_error(
+    marginalize(s$fit, s$df, approaches = "B", mc_sample = data.frame(x = 1)),
+    regexp = "non-empty list"
+  )
+  expect_error(marginalize(s$fit, s$df, n_obs = 0), regexp = "n_obs")
+  expect_error(marginalize(s$fit, s$df, n_boot = 0), regexp = "n_boot")
+  expect_error(
+    marginalize(s$fit, s$df, z_hi = s$fit$threshold),
+    regexp = "greater than the threshold"
+  )
+
+  bad_y <- s$df
+  bad_y$y <- NA_real_
+  expect_error(marginalize(s$fit, bad_y), regexp = "data\\$y")
+})
+
+test_that("return-level search handles boundary and failed brackets", {
+  at_threshold <- margEVT:::.find_return_level(
+    TR = 2, f_annual = function(z) 0.5,
+    z_lo = 10, z_hi = 20
+  )
+  expect_equal(at_threshold, 10)
+
+  no_upper_crossing <- margEVT:::.find_return_level(
+    TR = 10, f_annual = function(z) 0.1,
+    z_lo = 10, z_hi = 20
+  )
+  expect_true(is.na(no_upper_crossing))
+
+  failed_evaluation <- margEVT:::.find_return_level(
+    TR = 10, f_annual = function(z) stop("failure"),
+    z_lo = 10, z_hi = 20
+  )
+  expect_true(is.na(failed_evaluation))
+
+  nonfinite_after_expansion <- margEVT:::.find_return_level(
+    TR = 10,
+    f_annual = function(z) if (z <= 20) 0.1 else NaN,
+    z_lo = 10, z_hi = 20
+  )
+  expect_true(is.na(nonfinite_after_expansion))
+})
+
+test_that("approach C preserves the caller's random-number stream", {
+  s <- make_stationary_fit()
+  set.seed(99L)
+  expected <- runif(2L)
+
+  set.seed(99L)
+  first <- runif(1L)
+  marginalize(s$fit, s$df, TRs = 10, approaches = "C",
+              n_boot = 10L, seed = 123L)
+  second <- runif(1L)
+
+  expect_equal(c(first, second), expected)
 })
 
 test_that("marginalize approach C handles under-observed years", {

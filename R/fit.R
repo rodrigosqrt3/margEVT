@@ -11,12 +11,17 @@
 #   - coef.nhpp_fit()    : coef method
 # =============================================================================
 
+.optim_nhpp <- function(...) {
+  stats::optim(...)
+}
+
 # -----------------------------------------------------------------------------
 # S3 constructor - internal
 # -----------------------------------------------------------------------------
 new_nhpp_fit <- function(par, dm, threshold, nllh_pen, nllh_raw,
                          lambda, alpha, penalty, penalize_shape,
-                         hessian, fitted, obs_per_year, converged, n_exc) {
+                         hessian, fitted, obs_per_year, active_tol,
+                         converged, n_exc) {
   structure(
     list(
       par            = par,
@@ -31,6 +36,7 @@ new_nhpp_fit <- function(par, dm, threshold, nllh_pen, nllh_raw,
       hessian        = hessian,
       fitted         = fitted,
       obs_per_year   = obs_per_year,
+      active_tol     = active_tol,
       converged      = converged,
       n_exc          = n_exc
     ),
@@ -112,15 +118,15 @@ new_nhpp_fit <- function(par, dm, threshold, nllh_pen, nllh_raw,
                                   penalize_shape, obs_per_year = obs_per_year)
 
   res <- tryCatch(
-    stats::optim(init, obj_fn, gr = gr_fn, method = "BFGS",
-                 control = list(maxit = maxit), hessian = calc_hessian),
+    .optim_nhpp(init, obj_fn, gr = gr_fn, method = "BFGS",
+                control = list(maxit = maxit), hessian = calc_hessian),
     error = function(e) NULL
   )
   if (is.null(res) || res$convergence != 0)
     res <- tryCatch(
-      stats::optim(init, obj_fn, gr = gr_fn, method = "L-BFGS-B",
-                   control = list(maxit = maxit, factr = 1e7),
-                   hessian = calc_hessian),
+      .optim_nhpp(init, obj_fn, gr = gr_fn, method = "L-BFGS-B",
+                  control = list(maxit = maxit, factr = 1e7),
+                  hessian = calc_hessian),
       error = function(e) NULL
     )
 
@@ -177,6 +183,9 @@ new_nhpp_fit <- function(par, dm, threshold, nllh_pen, nllh_raw,
 #'   Default \code{TRUE}.
 #' @param obs_per_year Numeric. Observations per year. E.g. \code{365.25}
 #'   for daily data, \code{52} for weekly. Default \code{365.25}.
+#' @param active_tol Positive numeric tolerance used for BIC complexity
+#'   counting, active-covariate extraction, and default coefficient reporting.
+#'   Default \code{1e-2}.
 #' @param maxit Integer. Maximum optimizer iterations. Default \code{10000L}.
 #' @param calc_hessian Logical. Compute Hessian at solution? Needed for
 #'   delta-method standard errors. Default \code{FALSE}.
@@ -196,6 +205,7 @@ fit_nhpp <- function(df, threshold,
                      lambda         = "bic",
                      penalize_shape = TRUE,
                      obs_per_year   = 365.25,
+                     active_tol     = 1e-2,
                      maxit          = 10000L,
                      calc_hessian   = FALSE,
                      verbose        = TRUE) {
@@ -204,13 +214,35 @@ fit_nhpp <- function(df, threshold,
     stop("fit_nhpp: `df` must be a data frame.")
   if (!"y" %in% names(df))
     stop("fit_nhpp: `df` must contain a column named `y` (the response).")
-  if (!is.numeric(threshold) || length(threshold) != 1L)
-    stop("fit_nhpp: `threshold` must be a single numeric value.")
+  if (!is.numeric(threshold) || length(threshold) != 1L ||
+      !is.finite(threshold))
+    stop("fit_nhpp: `threshold` must be a single numeric value that is finite.")
+  if (!is.numeric(active_tol) || length(active_tol) != 1L ||
+      !is.finite(active_tol) || active_tol <= 0)
+    stop("fit_nhpp: `active_tol` must be a single positive numeric value.")
+  if (!is.numeric(obs_per_year) || length(obs_per_year) != 1L ||
+      !is.finite(obs_per_year) || obs_per_year <= 0)
+    stop("fit_nhpp: `obs_per_year` must be a single positive numeric value.")
+  if (!is.numeric(maxit) || length(maxit) != 1L ||
+      !is.finite(maxit) || maxit < 1)
+    stop("fit_nhpp: `maxit` must be a positive integer.")
+  if (!is.logical(penalize_shape) || length(penalize_shape) != 1L ||
+      is.na(penalize_shape))
+    stop("fit_nhpp: `penalize_shape` must be TRUE or FALSE.")
+  if (!is.logical(calc_hessian) || length(calc_hessian) != 1L ||
+      is.na(calc_hessian))
+    stop("fit_nhpp: `calc_hessian` must be TRUE or FALSE.")
+  if (!is.logical(verbose) || length(verbose) != 1L || is.na(verbose))
+    stop("fit_nhpp: `verbose` must be TRUE or FALSE.")
 
   penalty <- match.arg(penalty)
 
   y     <- df$y
+  if (!is.numeric(y) || any(!is.finite(y)))
+    stop("fit_nhpp: `df$y` must contain only finite numeric values.")
   n_exc <- sum(y > threshold, na.rm = TRUE)
+  if (n_exc == 0L)
+    stop("fit_nhpp: no observations exceed `threshold`.")
   if (n_exc < 5L && verbose)
     warning("fit_nhpp: fewer than 5 exceedances - estimates may be unreliable.")
 
@@ -221,17 +253,40 @@ fit_nhpp <- function(df, threshold,
                   elnet = alpha
   )
 
+  validate_block_control <- function(x, name, lower = -Inf, upper = Inf) {
+    if (!is.numeric(x) || any(!is.finite(x)) ||
+        length(x) < 1L || !length(x) %in% c(1L, 3L) ||
+        any(x < lower) || any(x > upper))
+      stop(sprintf(
+        "fit_nhpp: `%s` must be a finite scalar or named vector c(mu=, sigma=, xi=).",
+        name
+      ))
+    if (length(x) == 3L) {
+      if (is.null(names(x)) || !setequal(names(x), c("mu", "sigma", "xi")))
+        stop(sprintf(
+          "fit_nhpp: a three-element `%s` vector must be named mu, sigma, and xi.",
+          name
+        ))
+      x <- x[c("mu", "sigma", "xi")]
+    }
+    x
+  }
+  alpha <- validate_block_control(alpha, "alpha", lower = 0, upper = 1)
+
   if (penalty == "none") {
     lambda_resolved <- 0
   } else if (is.numeric(lambda)) {
-    lambda_resolved <- lambda
+    lambda_resolved <- validate_block_control(lambda, "lambda", lower = 0)
   } else if (identical(lambda, "bic")) {
     lambda_resolved <- NULL   # will be filled by grid search below
   } else {
-    stop("fit_nhpp: `lambda` must be a positive numeric value or \"bic\".")
+    stop("fit_nhpp: `lambda` must be a non-negative numeric value or \"bic\".")
   }
 
   dm    <- build_design_matrices(df, loc_vars, scale_vars, shape_vars, free_vars)
+  design_values <- unlist(dm[c("X_mu", "X_sigma", "X_xi")], use.names = FALSE)
+  if (any(!is.finite(design_values)))
+    stop("fit_nhpp: model covariates must contain only finite numeric values.")
   p_mu  <- ncol(dm$X_mu)
   p_sig <- ncol(dm$X_sigma)
   p_xi  <- ncol(dm$X_xi)
@@ -260,6 +315,7 @@ fit_nhpp <- function(df, threshold,
       penalize_shape = penalize_shape,
       init           = init,
       obs_per_year   = obs_per_year,
+      active_tol     = active_tol,
       maxit          = maxit,
       verbose        = verbose
     )
@@ -309,6 +365,7 @@ fit_nhpp <- function(df, threshold,
     hessian        = res$hessian,
     fitted         = fitted,
     obs_per_year   = obs_per_year,
+    active_tol     = active_tol,
     converged      = res$converged,
     n_exc          = n_exc
   )
@@ -329,7 +386,8 @@ print.nhpp_fit <- function(x, ...) {
   cat(sprintf("  nllh (raw)   : %.4f\n",  x$nllh_raw))
   cat(sprintf("  nllh (pen)   : %.4f\n",  x$nllh_pen))
   cat(sprintf("  obs/year     : %.2f\n",  x$obs_per_year))
-  active <- x$par[abs(x$par) > 1e-4]
+  tol    <- if (is.null(x$active_tol)) 1e-2 else x$active_tol
+  active <- x$par[.active_parameter_mask(x, tol)]
   cat(sprintf("  Active params: %d of %d\n", length(active), length(x$par)))
   cat("  Coefficients (non-zero):\n")
   print(round(active, 5L))

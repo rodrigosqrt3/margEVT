@@ -11,7 +11,7 @@
 #   2. Build empirical block bootstrap covariate sample from training years
 #   3. Compute return levels on training data
 #   4. Validate against observed annual maxima in validation years
-#   5. Compute PIT (probability integral transform) for calibration
+#   5. Compute a tail-conditional PIT diagnostic
 # =============================================================================
 
 #' Walk-forward backtesting for NHPP extreme value models
@@ -20,8 +20,10 @@
 #' walk-forward cross-validation. For each window, the model is refit on
 #' training data at the original penalty and lambda, return levels are
 #' computed, and exceedance rates are compared to nominal rates via
-#' binomial tests. Probabilistic calibration is assessed via a
-#' Kolmogorov-Smirnov test on the PIT values.
+#' binomial tests. A Kolmogorov-Smirnov comparison on tail-conditional PIT
+#' values is returned as an exploratory diagnostic; it is not a formal test
+#' of global predictive calibration. Validation years below
+#' code{min_obs_year} observed values are excluded from binomial denominators.
 #'
 #' @param fit An \code{nhpp_fit} object.
 #' @param data The data frame used to fit \code{fit}. Must contain columns
@@ -31,7 +33,10 @@
 #'   for validation.
 #' @param TRs Numeric vector of return periods to evaluate. Default
 #'   \code{c(2, 5, 10)}.
-#' @param n_obs Integer. Observations per year. Default \code{365L}.
+#' @param n_obs Integer observations per year. If \code{NULL}, uses the
+#'   rounded \code{fit$obs_per_year} value.
+#' @param period Numeric seasonal period in observations. If \code{NULL},
+#'   inherits \code{fit$obs_per_year}.
 #' @param window_years Integer. Width of each validation window in years.
 #'   Default \code{5L}.
 #' @param min_train_years Integer. Minimum number of training years before
@@ -49,14 +54,19 @@
 #'   \item{results}{Data frame with one row per validation year, containing
 #'     the observed annual maximum, PIT value, and exceedance indicators for
 #'     each return period.}
-#'   \item{binom_tests}{Data frame with binomial test results for each TR.}
-#'   \item{ks_test}{Data frame with KS test result for PIT calibration,
-#'     or \code{NULL} if fewer than 5 validation years had events.}
+#'   \item{binom_tests}{Data frame with nominal binomial comparisons for each
+#'     TR. The \code{not_rejected} field is the recommended interpretation;
+#'     \code{calibrated} is retained as a legacy alias.}
+#'   \item{ks_test}{Data frame with the exploratory tail-conditional PIT
+#'     KS comparison, including \code{not_rejected} and the legacy
+#'     \code{calibrated} alias, or \code{NULL} if fewer than 5 validation
+#'     years had events.}
 #'
 #' @export
 backtest <- function(fit, data, varname,
                      TRs             = c(2, 5, 10),
-                     n_obs           = 365L,
+                     n_obs           = NULL,
+                     period          = NULL,
                      window_years    = 5L,
                      min_train_years = 10L,
                      n_boot          = 200L,
@@ -75,13 +85,32 @@ backtest <- function(fit, data, varname,
     stop(sprintf("backtest: column '%s' not found in data.", year_col))
   if (!"y" %in% names(data))
     stop("backtest: `data` must contain column `y`.")
+  if (!is.numeric(TRs) || length(TRs) < 1L ||
+      any(!is.finite(TRs)) || any(TRs <= 1))
+    stop("backtest: `TRs` must contain finite return periods greater than 1.")
 
-  n_obs        <- as.integer(n_obs)
+  inherited_obs <- if (is.null(fit$obs_per_year)) 365.25 else fit$obs_per_year
+  n_obs        <- if (is.null(n_obs)) as.integer(round(inherited_obs)) else
+    as.integer(n_obs)
+  if (!is.finite(n_obs) || n_obs < 1L)
+    stop("backtest: `n_obs` must be a positive integer.")
   window_years <- as.integer(window_years)
+  min_train_years <- as.integer(min_train_years)
+  n_boot <- as.integer(n_boot)
+  if (!is.finite(window_years) || window_years < 1L)
+    stop("backtest: `window_years` must be a positive integer.")
+  if (!is.finite(min_train_years) || min_train_years < 1L)
+    stop("backtest: `min_train_years` must be a positive integer.")
+  if (!is.finite(n_boot) || n_boot < 1L)
+    stop("backtest: `n_boot` must be a positive integer.")
   min_obs_year <- if (is.null(min_obs_year)) as.integer(n_obs * 0.8) else
     as.integer(min_obs_year)
+  if (!is.finite(min_obs_year) || min_obs_year < 1L)
+    stop("backtest: `min_obs_year` must be a positive integer.")
 
-  all_years  <- sort(unique(data[[year_col]]))
+  all_years  <- sort(unique(data[[year_col]][!is.na(data[[year_col]])]))
+  if (length(all_years) == 0L)
+    stop("backtest: `year_col` contains no valid years.")
   min_year   <- min(all_years)
   max_year   <- max(all_years)
   thr        <- fit$threshold
@@ -124,8 +153,17 @@ backtest <- function(fit, data, varname,
       next
     }
 
-    cov_w <- .build_cov_bootstrap(fit_w, data, train_yrs, ac_in_data,
-                                  n_boot, n_obs, interactions, year_col)
+    cov_w <- .build_cov_bootstrap(
+      fit_w        = fit_w,
+      data         = data,
+      train_yrs    = train_yrs,
+      ac_in_data   = ac_in_data,
+      n_boot       = n_boot,
+      n_obs        = n_obs,
+      interactions = interactions,
+      year_col     = year_col,
+      period       = period
+    )
     if (length(cov_w) == 0L) {
       if (verbose) message("  -> No valid covariate blocks, skipping window.")
       next
@@ -145,8 +183,9 @@ backtest <- function(fit, data, varname,
       y_yr   <- df_yr[[varname]]
       exc_yr <- y_yr[!is.na(y_yr) & y_yr > thr]
       M_yr   <- if (length(exc_yr) > 0L) max(exc_yr) else NA_real_
+      valid_year <- sum(!is.na(y_yr)) >= min_obs_year
 
-      if (is.na(M_yr) || nrow(df_yr) < min_obs_year) {
+      if (is.na(M_yr) || !valid_year) {
         F_yr <- NA_real_
       } else {
         # PIT: P(annual max <= M_yr) under the training model
@@ -156,7 +195,8 @@ backtest <- function(fit, data, varname,
 
       superou <- stats::setNames(
         vapply(rl_w, function(rl)
-          if (!is.na(M_yr) && !is.na(rl)) M_yr > rl else FALSE,
+          if (!valid_year || is.na(rl)) NA else
+            if (is.na(M_yr)) FALSE else M_yr > rl,
           logical(1L)),
         paste0("exc_T", TRs)
       )
@@ -184,8 +224,15 @@ backtest <- function(fit, data, varname,
     col   <- paste0("exc_T", TR)
     n_exc <- sum(df_results[[col]], na.rm = TRUE)
     n_tot <- sum(!is.na(df_results[[col]]))
-    p_obs <- n_exc / n_tot
     p_teo <- 1 / TR
+    if (n_tot == 0L) {
+      return(data.frame(
+        TR = TR, expected = round(p_teo, 4L), observed = NA_real_,
+        n_exceedances = 0L, n_total = 0L, p_value = NA_real_,
+        not_rejected = NA, calibrated = NA
+      ))
+    }
+    p_obs <- n_exc / n_tot
     bt    <- stats::binom.test(n_exc, n_tot, p = p_teo)
     data.frame(
       TR           = TR,
@@ -194,19 +241,21 @@ backtest <- function(fit, data, varname,
       n_exceedances = n_exc,
       n_total      = n_tot,
       p_value      = round(bt$p.value, 4L),
+      not_rejected = bt$p.value > 0.05,
       calibrated   = bt$p.value > 0.05
     )
   })
   df_binom <- do.call(rbind, Filter(Negate(is.null), binom_list))
 
   if (verbose) {
-    message("\n Binomial calibration tests")
+    message("\n Nominal binomial rate comparisons")
     for (i in seq_len(nrow(df_binom))) {
       message(sprintf("  T=%3d | expected=%.3f | observed=%.3f (%d/%d) | p=%.3f %s",
                       df_binom$TR[i], df_binom$expected[i],
                       df_binom$observed[i], df_binom$n_exceedances[i],
                       df_binom$n_total[i], df_binom$p_value[i],
-                      if (df_binom$calibrated[i]) "v" else "!"))
+                      if (is.na(df_binom$not_rejected[i])) "not estimable" else
+                        if (df_binom$not_rejected[i]) "compatible" else "departure"))
     }
   }
 
@@ -218,13 +267,14 @@ backtest <- function(fit, data, varname,
       n           = nrow(df_ev),
       D_statistic = round(as.numeric(ks$statistic), 4L),
       p_value     = round(ks$p.value, 4L),
-      calibrated  = ks$p.value > 0.05
+      not_rejected = ks$p.value > 0.05,
+      calibrated   = ks$p.value > 0.05
     )
     if (verbose)
       message(sprintf(
-        "\n PIT calibration (KS test) \n  n=%d | D=%.4f | p=%.4f | %s",
+        "\n Exploratory tail-PIT KS comparison \n  n=%d | D=%.4f | p=%.4f | %s",
         ks_res$n, ks_res$D_statistic, ks_res$p_value,
-        if (ks_res$calibrated) "Well calibrated" else "Miscalibration detected"
+        if (ks_res$not_rejected) "no nominal departure detected" else "nominal departure detected"
       ))
   }
 
@@ -243,11 +293,13 @@ backtest <- function(fit, data, varname,
 # .build_cov_bootstrap()
 # Sample n_boot years of covariates from training years.
 .build_cov_bootstrap <- function(fit_w, data, train_yrs, ac_in_data,
-                                 n_boot, n_obs, interactions, year_col) {
+                                 n_boot, n_obs, interactions, year_col,
+                                 period = NULL) {
 
   if (length(ac_in_data) == 0L) {
     return(lapply(seq_len(n_boot), function(i)
       build_cov_annual(fit_w, list(), n_obs = n_obs,
+                       period = period,
                        interactions = interactions)))
   }
 
@@ -280,7 +332,8 @@ backtest <- function(fit, data, varname,
                      df_yr[rep(nrow(df_yr), falta), , drop = FALSE])
     }
     build_cov_annual(fit_w, as.list(df_yr),
-                     n_obs = n_obs, interactions = interactions)
+                     n_obs = n_obs, period = period,
+                     interactions = interactions)
   })
   Filter(Negate(is.null), cov_list)
 }
@@ -292,14 +345,7 @@ backtest <- function(fit, data, varname,
   mu_t    <- params$mu
   sigma_t <- params$sigma
   xi_t    <- params$xi
-  xi_tol  <- 1e-6
-  z_u     <- 1 + xi_t * (z - mu_t) / sigma_t
-  lam_vec <- ifelse(
-    abs(xi_t) < xi_tol,
-    exp(pmax(-500, -(z - mu_t) / sigma_t)),
-    ifelse(z_u <= 0, 0,
-           exp((-1 / xi_t) * log(pmax(z_u, 1e-300))))
-  )
+  lam_vec <- .tail_measure_at_level(z, mu_t, sigma_t, xi_t)
   exp(-mean(lam_vec, na.rm = TRUE))
 }
 

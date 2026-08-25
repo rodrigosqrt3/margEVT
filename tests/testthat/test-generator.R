@@ -54,6 +54,19 @@ test_that("fit_var_generator validates `fit` and `data`", {
   )
 })
 
+test_that("fit_var_generator validates period and lag limits", {
+  fit <- .make_fake_fit()
+  df <- .make_test_data()
+  expect_error(
+    fit_var_generator(fit, df, vars = c("x1", "x2"), period = 0),
+    "period"
+  )
+  expect_error(
+    fit_var_generator(fit, df, vars = c("x1", "x2"), lag_max = 0),
+    "lag_max"
+  )
+})
+
 test_that("fit_var_generator errors when the 'vars' package is unavailable", {
   fit <- .make_fake_fit()
   df  <- .make_test_data()
@@ -121,12 +134,22 @@ test_that("fit_var_generator builds cos1/sen1/cos2/sen2 when absent from data", 
                     names(gen$seasonal_models$x1$coefs)))
 })
 
+test_that("fit_var_generator inherits the fitted temporal resolution", {
+  fit <- .make_fake_fit()
+  fit$obs_per_year <- 52
+  df <- .make_test_data(n = 260L, with_seasonal_cols = FALSE)
+  gen <- fit_var_generator(fit, df, vars = c("x1", "x2"))
+  expect_equal(gen$period, 52)
+})
+
 test_that("fit_var_generator reuses existing seasonal columns when present", {
   fit <- .make_fake_fit()
   df  <- .make_test_data(with_seasonal_cols = TRUE)
   gen <- fit_var_generator(fit, df, vars = c("x1", "x2"))
   expect_s3_class(gen, "nhpp_var_generator")
   expect_identical(gen$vars, c("x1", "x2"))
+  expect_true(gen$spectral_radius < 1)
+  expect_equal(gen$spectral_radius, max(gen$root_moduli))
 })
 
 test_that("fit_var_generator pads a single covariate with dummy noise for VAR", {
@@ -154,6 +177,30 @@ test_that("fit_var_generator respects an explicit lag_max", {
   expect_lte(gen$p_opt, 2L)
 })
 
+test_that("fit_var_generator rejects a non-finite selected lag", {
+  fit <- .make_fake_fit()
+  df <- .make_test_data()
+  testthat::local_mocked_bindings(
+    .select_var_order = function(...) NA_real_
+  )
+  expect_error(
+    fit_var_generator(fit, df, vars = c("x1", "x2")),
+    "did not return a finite order"
+  )
+})
+
+test_that("fit_var_generator rejects an unstable selected VAR", {
+  fit <- .make_fake_fit()
+  df <- .make_test_data()
+  testthat::local_mocked_bindings(
+    .var_root_moduli = function(...) c(0.8, 1.01)
+  )
+  expect_error(
+    fit_var_generator(fit, df, vars = c("x1", "x2")),
+    "selected VAR.*is unstable"
+  )
+})
+
 test_that("fit_var_generator computes a default lag_max when not supplied", {
   fit <- .make_fake_fit()
   df  <- .make_test_data()
@@ -172,6 +219,16 @@ test_that("simulate_covariates validates the generator class", {
   )
 })
 
+test_that("simulate_covariates validates simulation dimensions", {
+  fit <- .make_fake_fit()
+  df <- .make_test_data()
+  gen <- fit_var_generator(fit, df, vars = c("x1", "x2"))
+
+  expect_error(simulate_covariates(gen, n_mc = 0), "n_mc")
+  expect_error(simulate_covariates(gen, n_mc = 1, burn_in = -1), "burn_in")
+  expect_error(simulate_covariates(gen, n_mc = 1, n_obs = 0), "n_obs")
+})
+
 test_that("simulate_covariates produces the right shape and column names", {
   fit <- .make_fake_fit()
   df  <- .make_test_data()
@@ -188,6 +245,15 @@ test_that("simulate_covariates produces the right shape and column names", {
     expect_true(all(vapply(yr_df, is.numeric, logical(1L))))
     expect_true(all(vapply(yr_df, function(col) all(is.finite(col)), logical(1L))))
   }
+})
+
+test_that("simulate_covariates inherits trajectory length from the generator", {
+  fit <- .make_fake_fit()
+  fit$obs_per_year <- 52
+  df <- .make_test_data(n = 260L, with_seasonal_cols = FALSE)
+  gen <- fit_var_generator(fit, df, vars = c("x1", "x2"))
+  mc <- simulate_covariates(gen, n_mc = 2L, burn_in = 10L, seed = 1L)
+  expect_equal(vapply(mc, nrow, integer(1L)), c(52L, 52L))
 })
 
 test_that("simulate_covariates is reproducible with the same seed", {

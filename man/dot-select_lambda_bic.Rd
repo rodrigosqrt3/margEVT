@@ -12,6 +12,7 @@
   penalize_shape,
   init,
   obs_per_year = 365.25,
+  active_tol = 0.01,
   maxit = 5000L,
   verbose = TRUE
 )
@@ -30,6 +31,8 @@
 \item{init}{Named numeric starting parameter vector.}
 
 \item{obs_per_year}{Numeric.}
+
+\item{active_tol}{Positive numeric tolerance for BIC complexity counting.}
 
 \item{maxit}{Integer.}
 

@@ -16,6 +16,7 @@ fit_nhpp(
   lambda = "bic",
   penalize_shape = TRUE,
   obs_per_year = 365.25,
+  active_tol = 0.01,
   maxit = 10000L,
   calc_hessian = FALSE,
   verbose = TRUE
@@ -56,6 +57,10 @@ Default \code{TRUE}.}
 
 \item{obs_per_year}{Numeric. Observations per year. E.g. \code{365.25}
 for daily data, \code{52} for weekly. Default \code{365.25}.}
+
+\item{active_tol}{Positive numeric tolerance used for BIC complexity
+counting, active-covariate extraction, and default coefficient reporting.
+Default \code{1e-2}.}
 
 \item{maxit}{Integer. Maximum optimizer iterations. Default \code{10000L}.}
 

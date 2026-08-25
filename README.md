@@ -1,6 +1,6 @@
 # margEVT: Regularized Point Processes and Stochastic Marginalization for Return Level Inference
 
-[![CRAN status](https://www.r-pkg.org/badges/version/margEVT)](https://CRAN.R-project.org/package=margEVT) &nbsp; [![R-CMD-check](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml/badge.svg)](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml) &nbsp; [![codecov](https://codecov.io/gh/rodrigosqrt3/margEVT/branch/main/graph/badge.svg)](https://codecov.io/gh/rodrigosqrt3/margEVT)
+[![CRAN status](https://www.r-pkg.org/badges/version/margEVT)](https://CRAN.R-project.org/package=margEVT) &nbsp; [![R-CMD-check](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml/badge.svg)](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml) &nbsp; [![codecov](https://codecov.io/gh/rodrigosqrt3/margEVT/branch/main/graph/badge.svg)](https://app.codecov.io/gh/rodrigosqrt3/margEVT)
 
 `margEVT` is an R package developed to conduct non-stationary extreme value analysis under covariate-driven regimes. The package implements the statistical framework developed in Villa (2026) under the supervision of Prof. Dr. Flavio Ziegelmann, coupling a covariate-driven Non-Homogeneous Poisson Process (NHPP) with an Elastic-Net penalized maximum likelihood estimation framework and stochastically marginalized return-level estimation.
 
@@ -13,7 +13,7 @@ Exceedances of an extreme threshold $u$ over an observational domain are modeled
 
 $$\lambda(t, y) = \frac{1}{\sigma(t)} \left[ 1 + \xi(t) \left( \frac{y - \mu(t)}{\sigma(t)} \right) \right]_{+}^{-1/\xi(t)-1}$$
 
-where $[a]_+ = \max(a, 0)$. 
+where $[a]_+ = \max(a, 0)$.
 
 To capture non-stationarity, the parameters are modeled as linear combinations of covariate vectors $\mathbf{x}_t$:
 
@@ -44,7 +44,7 @@ The optimal regularization path parameter $\lambda^{\ast}$ is selected by minimi
 
 $$\text{BIC}(\lambda) = -2\ell(\hat{\boldsymbol{\theta}}_\lambda) + k_\lambda \log(m)$$
 
-where $m$ denotes the number of independent, declustered exceedances, and $k_\lambda$ is the number of active parameters.
+where $m$ is the exceedance count supplied to the fitted point-process model and $k_\lambda$ is the number of active parameters under the model's operational tolerance. The factor $\log(m)$ is an event-based model-selection convention, not a universal effective-sample-size identity. Declustering, when required by the application, is performed before calling `fit_nhpp()`.
 
 ---
 
@@ -53,41 +53,35 @@ where $m$ denotes the number of independent, declustered exceedances, and $k_\la
 Under non-stationarity, traditional definitions of a $T$-year return level are conceptually ill-defined. This package implements three distinct frameworks:
 
 ### 2.1 Approach A: Static Conditional Return Level
-The covariates are fixed at a constant scenario $\mathbf{x}_t \equiv \mathbf{x}^{\ast}$, representing a hypothetical frozen climate state. The conditional return level $z_T(\mathbf{x}^{\ast})$ is obtained analytically:
+The user-specified stochastic covariates are fixed at a scenario $\mathbf{x}^{\ast}$, representing a hypothetical frozen climate state while any deterministic predictors retained in the fitted design are evaluated over the annual block. If every predictor is constant, the conditional return level reduces to the analytical expression:
 
 $$z_T(\mathbf{x}^{\ast}) = \mu(\mathbf{x}^{\ast}) + \frac{\sigma(\mathbf{x}^{\ast})}{\xi(\mathbf{x}^{\ast})} \left[ \left(-\log\left(1 - \frac{1}{T}\right)\right)^{-\xi(\mathbf{x}^{\ast})} - 1 \right]$$
+
+The package evaluates the general conditional annual path numerically, so this approach also accommodates deterministic seasonal terms.
 
 ### 2.2 Approach B: Unconditional Parametric Stochastic Marginalization
 To capture long-run risk over the natural variability of the climate system, the non-stationary intensity is integrated over the stationary joint distribution $\Pi$ of the covariate trajectories $\mathbf{v}$:
 
 $$G_{\Pi}(z) = \mathbb{E}_{\{\mathbf{v} \sim \Pi\}} \left\lbrack G(z \mid \mathbf{v}) \right\rbrack = \mathbb{E}_{\{\mathbf{v} \sim \Pi\}} \left\lbrack \exp \left\lbrace -\frac{1}{n_{y}} \sum_{j=1}^{n_{y}} \left\lbrack 1 + \xi(t_{j}) \left\lparen \frac{z - \mu(t_{j} \mid \mathbf{v})}{\sigma(t_{j} \mid \mathbf{v})} \right\rparen \right\rbrack_{{+}}^{-1/\xi(t_{j})} \right\rbrace \right\rbrack$$
 
-The joint distribution $\Pi$ is modeled via a stable, stationary Vector Autoregressive process, $\text{VAR}(p)$. Synthetic daily trajectories are simulated, Fourier seasonality is re-injected, and $G_{\Pi}(z)$ is estimated via Monte Carlo integration over $n_{mc}$ simulated years:
+The joint distribution $\Pi$ is modeled via a stationary Vector Autoregressive process, $\text{VAR}(p)$. The fitted generator verifies that the companion-root spectral radius is below one before simulation. Independent synthetic annual trajectories are generated with separate burn-in periods at the fitted temporal resolution, Fourier seasonality is re-injected, and $G_{\Pi}(z)$ is estimated via Monte Carlo integration over $n_{mc}$ simulated years:
 
 $$\hat{G}_{\Pi, B}(z) = \frac{1}{n_{mc}} \sum_{r=1}^{n_{mc}} G(z \mid \mathbf{v}^{(r)})$$
 
-The marginalized unconditional return level $z_T^{\Pi}$ is recovered numerically as the unique root satisfying:
+The marginalized plug-in return level is recovered numerically from a target crossing satisfying:
 
 $$\hat{G}_{\Pi, B}(z_T^{\Pi}) - \left( 1 - \frac{1}{T} \right) = 0$$
 
-### 2.3 Approach C: Empirical Marginalization (Non-Parametric Control)
-The continuous probability space $\Pi$ is replaced by the empirical historical distribution $\hat{\Pi}$. The integrated probability is estimated as the sample mean over the fully observed historical daily multivariate trajectories of length $n_{obs}$:
+### 2.3 Approach C: Empirical Annual-Block Marginalization
+The trajectory law $\Pi$ is replaced by the empirical distribution of eligible historical annual blocks. If $K$ complete blocks are available, the exact empirical plug-in distribution is
 
-$$\hat{G}_{\text{emp}, C}(z) = \frac{1}{n_{obs}} \sum_{j=1}^{n_{obs}} G(z \mid \mathbf{v}_j)$$
+$$G_{\hat\Pi_{\mathrm{emp}}}(z) = \frac{1}{K} \sum_{k=1}^{K} G(z \mid \mathbf{V}_k).$$
 
----
-
-## 3. Model Diagnostics: Transformed Residuals
-
-Goodness-of-fit is assessed using the Time-Change Theorem. The $k$-th transformed residual $Z_k$ represents the integrated intensity measure between consecutive exceedance times $t_{k-1}$ and $t_k$:
-
-$$Z_k \approx \frac{1}{n_y} \sum_{j: t_{k-1} \le t_j < t_k} \left[ 1 + \hat{\xi}(t_j) \left( \frac{u - \hat{\mu}(t_j)}{\hat{\sigma}(t_j)} \right) \right]_{+}^{-1/\hat{\xi}(t_j)}$$
-
-Under correct model specification, the transformed residuals are independent and identically distributed, $Z_k \sim \text{Exp}(1)$, satisfying $\mathbb{E}[Z_k] = 1$ and $\text{Var}(Z_k) = 1$.
+The implementation approximates this finite empirical average by sampling `n_boot` complete years with replacement. This preserves the observed within-year covariate paths and is used as a sensitivity benchmark for the parametric trajectory generator.
 
 ---
 
-## 4. Installation
+## 3. Installation
 
 You can install the stable release version of `margEVT` from CRAN:
 
@@ -99,12 +93,12 @@ Alternatively, you can install the development version from GitHub:
 
 ```r
 # install.packages("devtools")
-devtools::install_github("rodrigo-villa/margEVT")
+devtools::install_github("rodrigosqrt3/margEVT")
 ```
 
 ---
 
-## 5. Quick-Start Example
+## 4. Quick-Start Example
 
 This reproducible example simulates a generic non-stationary extreme value process, fits the regularized NHPP model using the LASSO penalty ($\alpha = 1$) with BIC-based $\lambda$ selection, and computes return levels under all three major marginalization frameworks (including the stochastically marginalized Approach B).
 
@@ -150,7 +144,7 @@ sim_data <- data.frame(
 # =============================================================================
 
 fit <- fit_nhpp(
-  df             = sim_data, 
+  df             = sim_data,
   threshold      = 19,
   loc_vars       = c("x1", "x2", "x3"),
   scale_vars     = c("x1", "x2", "x4"),
@@ -172,7 +166,7 @@ coef(fit)
 # =============================================================================
 # 4. Fit the Parametric VAR(p) Stochastic Generator
 # =============================================================================
-# Automatically deseasonalizes active covariates, selects the optimal lag p 
+# Automatically deseasonalizes active covariates, selects the optimal lag p
 # via BIC, and fits the multivariate VAR model to the anomalies.
 generator <- fit_var_generator(fit, sim_data)
 
@@ -185,7 +179,7 @@ mc_sample <- simulate_covariates(generator, n_mc = 50L, n_obs = 100L, seed = 123
 # =============================================================================
 # Rather than conditioning on a "frozen" covariate state (Approach A),
 # we integrate out covariate uncertainty under both the parametric generator
-# (Approach B) and the non-parametric empirical block bootstrap (Approach C).
+# (Approach B) and empirical annual-block marginalization (Approach C).
 rl_long <- marginalize(
   fit         = fit,
   data        = sim_data,
@@ -206,7 +200,7 @@ print(rl_wide)
 
 ---
 
-## 6. Citation
+## 5. Citation
 
 To cite `margEVT` in publications, please use:
 

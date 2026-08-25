@@ -15,14 +15,42 @@ make_utils_fit <- function(seed = 1L) {
 # -----------------------------------------------------------------------------
 # summary.nhpp_fit Tests
 # -----------------------------------------------------------------------------
+test_that("preserved seed removes a temporary global seed", {
+  had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  if (had_seed)
+    old_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  on.exit({
+    if (had_seed) assign(".Random.seed", old_seed, envir = .GlobalEnv)
+  }, add = TRUE)
+
+  if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE))
+    rm(".Random.seed", envir = .GlobalEnv)
+  value <- margEVT:::.with_preserved_seed(123L, stats::runif(1L))
+
+  expect_true(is.finite(value))
+  expect_false(exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE))
+})
+
 test_that("summary.nhpp_fit runs without error", {
   fit <- make_utils_fit()
   expect_output(summary(fit), regexp = "nhpp_fit summary")
 })
 
+test_that("summary.nhpp_fit validates its activity tolerance", {
+  fit <- make_utils_fit()
+  expect_error(summary(fit, tol = 0), "tol")
+})
+
 test_that("summary.nhpp_fit shows threshold", {
   fit <- make_utils_fit()
   expect_output(summary(fit), regexp = "Threshold")
+})
+
+test_that("summary.nhpp_fit inherits the fitted activity tolerance", {
+  fit <- make_utils_fit()
+  fit$active_tol <- 1e-2
+  fit$par["mu.x"] <- 5e-3
+  expect_output(summary(fit), regexp = "Shrunk to zero : mu.x")
 })
 
 test_that("summary.nhpp_fit handles Hessian diagnostic branches (Mocked)", {
@@ -75,6 +103,21 @@ test_that("bic_nhpp returns a finite scalar", {
 
 test_that("bic_nhpp rejects non-nhpp_fit objects", {
   expect_error(bic_nhpp(list(a = 1)), regexp = "must be an nhpp_fit object")
+})
+
+test_that("bic_nhpp validates its activity tolerance", {
+  fit <- make_utils_fit()
+  expect_error(bic_nhpp(fit, tol = 0), "tol")
+})
+
+test_that("bic_nhpp supports legacy fits without activity tolerance", {
+  fit <- make_utils_fit()
+  fit$active_tol <- NULL
+
+  expected <- 2 * fit$nllh_raw +
+    sum(margEVT:::.active_parameter_mask(fit, 1e-2)) * log(fit$n_exc)
+
+  expect_equal(bic_nhpp(fit), expected)
 })
 
 test_that("bic_nhpp handles non-finite raw likelihood", {

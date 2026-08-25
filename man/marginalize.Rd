@@ -8,7 +8,8 @@ marginalize(
   fit,
   data,
   TRs = c(2, 5, 10, 20, 50, 100),
-  n_obs = 365L,
+  n_obs = NULL,
+  period = NULL,
   approaches = c("A", "C"),
   scenarios = NULL,
   mc_sample = NULL,
@@ -30,7 +31,11 @@ the name given in \code{year_col}) and all active covariates.}
 \item{TRs}{Numeric vector of return periods in years. Default
 \code{c(2, 5, 10, 20, 50, 100)}.}
 
-\item{n_obs}{Integer. Observations per year. Default \code{365L}.}
+\item{n_obs}{Integer observations per year. If \code{NULL}, uses the
+rounded \code{fit$obs_per_year} value.}
+
+\item{period}{Numeric seasonal period in observations. If \code{NULL},
+inherits \code{fit$obs_per_year}.}
 
 \item{approaches}{Character vector. Which approaches to run. Any subset of
 \code{c("A", "B", "C")}. Default \code{c("A", "C")}.}

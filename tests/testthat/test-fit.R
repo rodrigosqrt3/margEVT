@@ -10,6 +10,14 @@ test_that("fit_nhpp returns an nhpp_fit object", {
   df  <- make_test_df()
   fit <- fit_nhpp(df, threshold = 4, penalty = "none", verbose = FALSE)
   expect_s3_class(fit, "nhpp_fit")
+  expect_equal(fit$active_tol, 1e-2)
+})
+
+test_that("fit_nhpp stores a user-supplied activity tolerance", {
+  df  <- make_test_df()
+  fit <- fit_nhpp(df, threshold = 4, penalty = "none",
+                  active_tol = 5e-3, verbose = FALSE)
+  expect_equal(fit$active_tol, 5e-3)
 })
 
 test_that("penalty=none gives lambda=0 and correct parameter names", {
@@ -101,7 +109,95 @@ test_that("fit_nhpp input validation throws expected errors", {
   expect_error(fit_nhpp(list(y = 1:10), threshold = 4), regexp = "must be a data frame")
   expect_error(fit_nhpp(data.frame(x = 1:10), threshold = 4), regexp = "must contain a column named `y`")
   expect_error(fit_nhpp(df, threshold = c(1, 4)), regexp = "single numeric value")
-  expect_error(fit_nhpp(df, threshold = 4, penalty = "lasso", lambda = "invalid"), regexp = "positive numeric value or")
+  expect_error(fit_nhpp(df, threshold = 4, active_tol = 0), regexp = "active_tol")
+  expect_error(fit_nhpp(df, threshold = 4, penalty = "lasso", lambda = "invalid"), regexp = "numeric value or")
+  expect_error(fit_nhpp(df, threshold = 4, penalty = "lasso", lambda = -1), regexp = "lambda")
+  expect_error(
+    fit_nhpp(df, threshold = 4, penalty = "elnet", alpha = 2, lambda = 1),
+    regexp = "alpha"
+  )
+  expect_error(
+    fit_nhpp(df, threshold = 4, penalty = "elnet",
+             alpha = c(0.5, 0.5, 0.5), lambda = 1),
+    regexp = "must be named"
+  )
+  df_na <- df
+  df_na$x[1L] <- NA_real_
+  expect_error(
+    fit_nhpp(df_na, threshold = 4, loc_vars = "x", penalty = "none"),
+    regexp = "covariates"
+  )
+  expect_error(fit_nhpp(df, threshold = 4, maxit = 0), regexp = "maxit")
+  expect_error(
+    fit_nhpp(df, threshold = 4, obs_per_year = 0),
+    regexp = "obs_per_year"
+  )
+  expect_error(
+    fit_nhpp(df, threshold = 4, penalize_shape = NA),
+    regexp = "penalize_shape"
+  )
+  expect_error(
+    fit_nhpp(df, threshold = 4, calc_hessian = NA),
+    regexp = "calc_hessian"
+  )
+  expect_error(
+    fit_nhpp(df, threshold = 4, verbose = NA),
+    regexp = "verbose"
+  )
+
+  df_bad_y <- df
+  df_bad_y$y[1L] <- NA_real_
+  expect_error(fit_nhpp(df_bad_y, threshold = 4), regexp = "df\\$y")
+
+  df_no_exc <- df
+  df_no_exc$y <- 0
+  expect_error(fit_nhpp(df_no_exc, threshold = 4), regexp = "no observations exceed")
+
+  expect_error(
+    fit_nhpp(
+      df, threshold = 4, loc_vars = "x", penalty = "elnet",
+      alpha = c(a = 0.5, b = 0.5, c = 0.5), lambda = 1
+    ),
+    regexp = "named mu, sigma, and xi"
+  )
+})
+
+test_that("fit_nhpp accepts named block-specific controls", {
+  df <- make_test_df()
+  fit <- fit_nhpp(
+    df, threshold = 4, loc_vars = "x", penalty = "elnet",
+    alpha = c(xi = 0.3, mu = 0.5, sigma = 0.4),
+    lambda = c(sigma = 0.2, xi = 0.1, mu = 0.3),
+    verbose = FALSE
+  )
+  expect_equal(names(fit$alpha), c("mu", "sigma", "xi"))
+  expect_equal(names(fit$lambda), c("mu", "sigma", "xi"))
+})
+
+test_that(".fit_at_lambda returns a failed result when both optimizers error", {
+  df <- make_test_df()
+  dm <- margEVT:::build_design_matrices(
+    df, loc_vars = "x", scale_vars = NULL,
+    shape_vars = NULL, free_vars = NULL
+  )
+  attr(dm, "threshold") <- 4
+  init <- rep(0, ncol(dm$X_mu) + ncol(dm$X_sigma) + ncol(dm$X_xi))
+
+  testthat::local_mocked_bindings(
+    .optim_nhpp = function(...) stop("optimizer failure")
+  )
+
+  result <- margEVT:::.fit_at_lambda(
+    dm = dm, y = df$y, threshold = 4,
+    lambda = 0, alpha = 1, penalize_shape = TRUE,
+    init = init
+  )
+
+  expect_false(result$converged)
+  expect_identical(result$par, init)
+  expect_true(is.na(result$nllh_pen))
+  expect_true(is.na(result$nllh_raw))
+  expect_null(result$hessian)
 })
 
 test_that("fit_nhpp throws warning on < 5 exceedances", {

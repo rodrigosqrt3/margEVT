@@ -4,7 +4,7 @@
 \alias{active_covariates}
 \title{Extract names of non-seasonal covariates from a fitted model}
 \usage{
-active_covariates(fit, free_cols = NULL, tol = 1e-04)
+active_covariates(fit, free_cols = NULL, tol = NULL)
 }
 \arguments{
 \item{fit}{An \code{nhpp_fit} object.}
@@ -14,7 +14,8 @@ the result (intercept and seasonality terms are always excluded).
 Default \code{NULL}.}
 
 \item{tol}{Numeric. Coefficients smaller than this in absolute value are
-treated as zero (LASSO shrinkage). Default \code{1e-4}.}
+treated as zero. If \code{NULL}, inherits \code{fit$active_tol}; legacy
+objects fall back to \code{1e-2}.}
 }
 \value{
 Character vector of active covariate names, or \code{NULL} if

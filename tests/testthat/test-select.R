@@ -27,6 +27,7 @@ test_that("lambda=bic returns a converged fit", {
   expect_true(fit$converged)
   expect_true(is.numeric(fit$lambda))
   expect_true(all(fit$lambda > 0))
+  expect_equal(fit$active_tol, 1e-2)
 })
 
 test_that("bic selection returns a named lambda vector", {
@@ -79,7 +80,7 @@ test_that("bic selection handles no location covariates to penalize", {
   expect_s3_class(fit, "nhpp_fit")
 })
 
-test_that("bic selection throws error when all coarse grid fits fail", {
+test_that("fit_nhpp rejects non-finite model covariates before BIC selection", {
   df  <- make_select_df()
   df$x[1] <- NaN
   expect_error(
@@ -88,6 +89,33 @@ test_that("bic selection throws error when all coarse grid fits fail", {
              penalty  = "lasso",
              lambda   = "bic",
              verbose  = FALSE),
+    regexp = "model covariates must contain only finite numeric values"
+  )
+})
+
+test_that("bic selection throws error when all coarse grid fits fail", {
+  df <- make_select_df()
+  dm <- margEVT:::build_design_matrices(
+    df, loc_vars = "x", scale_vars = NULL,
+    shape_vars = NULL, free_vars = NULL
+  )
+  init <- rep(0, ncol(dm$X_mu) + ncol(dm$X_sigma) + ncol(dm$X_xi))
+
+  testthat::local_mocked_bindings(
+    .fit_at_lambda = function(...) list(
+      converged = FALSE,
+      par = init,
+      nllh_pen = NA_real_,
+      nllh_raw = NA_real_,
+      hessian = NULL
+    )
+  )
+
+  expect_error(
+    margEVT:::.select_lambda_bic(
+      dm = dm, y = df$y, threshold = 4, alpha = 1,
+      penalize_shape = TRUE, init = init, verbose = FALSE
+    ),
     regexp = "all coarse grid fits failed"
   )
 })

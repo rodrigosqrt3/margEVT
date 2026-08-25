@@ -4,13 +4,14 @@
 \alias{bic_nhpp}
 \title{Compute BIC for a fitted nhpp_fit model}
 \usage{
-bic_nhpp(fit, tol = 0.01)
+bic_nhpp(fit, tol = NULL)
 }
 \arguments{
 \item{fit}{An \code{nhpp_fit} object.}
 
 \item{tol}{Numeric. Coefficients smaller than this are counted as zero
-for the active parameter count. Default \code{1e-2}.}
+for the active parameter count. If \code{NULL}, inherits
+\code{fit$active_tol}; legacy objects fall back to \code{1e-2}.}
 }
 \value{
 Numeric scalar. BIC value.

@@ -22,8 +22,8 @@ bootstrap_coef(fit, data, R = 200L, level = 0.95, seed = 42L, verbose = TRUE)
 }
 \value{
 A data frame with columns \code{parameter}, \code{estimate},
-  \code{CI_low}, \code{CI_high}, \code{n_ok}. Only parameters with
-  non-negligible estimates (\code{|estimate| > 1e-4}) are returned.
+  \code{CI_low}, \code{CI_high}, \code{n_ok}, with one row for every
+  coefficient in the fitted model.
 }
 \description{
 Simulates \code{R} bootstrap samples, refits at the original penalty and

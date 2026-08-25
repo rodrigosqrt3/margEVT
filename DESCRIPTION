@@ -1,13 +1,13 @@
 Package: margEVT
 Type: Package
 Title: Regularized Point Processes and Stochastic Marginalization for Extremes
-Version: 0.1.1
+Version: 0.2.0
 Authors@R: c(
     person("Rodrigo Fonseca", "Villa", email = "rodrigo03.villa@gmail.com",
            role = c("aut", "cre"),
            comment = c(ORCID = "0009-0005-2938-2270")),
     person("Flavio", "Ziegelmann", email = "flavioaz@mat.ufrgs.br",
-           role = "ths",
+           role = c("aut", "ths"),
            comment = c(ORCID = "0000-0001-8899-350X"))
     )
 Description: Implements a non-stationary extreme value analysis framework
@@ -16,7 +16,9 @@ Description: Implements a non-stationary extreme value analysis framework
     methodologies for estimating conditional return levels and unconditional
     (marginalized) return levels via parametric stochastic integration over
     Vector Autoregressive VAR(p) covariate trajectories, or non-parametric
-    block bootstrapping. Methodologies are based on Villa (2026)
+    annual-block resampling. Temporal resolution and active-set tolerances are
+    propagated consistently through fitting, marginalization, simulation, and
+    validation. Methodologies are based on Villa (2026)
     <https://sabi.ufrgs.br/> "A Novel Regularized Point Process and Stochastic
     Marginalization Framework for Return Level Inference under Covariate-Driven
     Extremes" (Master's dissertation, Universidade Federal do Rio Grande do Sul).
@@ -24,7 +26,6 @@ License: GPL (>= 3)
 Encoding: UTF-8
 URL: https://github.com/rodrigosqrt3/margEVT
 BugReports: https://github.com/rodrigosqrt3/margEVT/issues
-LazyData: true
 RoxygenNote: 7.3.3
 Imports:
     stats,
