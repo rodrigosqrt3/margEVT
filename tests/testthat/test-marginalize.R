@@ -105,6 +105,18 @@ test_that("annual probabilities reject invalid fitted parameters", {
   )
 })
 
+test_that("annual probabilities reject an invalid computed tail measure", {
+  testthat::local_mocked_bindings(
+    .tail_measure_at_level = function(...) NA_real_
+  )
+  expect_error(
+    margEVT:::.annual_exceedance_prob(
+      z = 1, mu_t = 0, sigma_t = 1, xi_t = 0, n_obs = 1L
+    ),
+    regexp = "invalid tail measure"
+  )
+})
+
 test_that("return-level search does not extrapolate below the threshold", {
   root <- margEVT:::.find_return_level(
     TR = 2,
@@ -169,6 +181,19 @@ test_that("missing year column throws informative error", {
   expect_error(
     marginalize(s$fit, df2, approaches = "C"),
     regexp = "year"
+  )
+})
+
+test_that("approach C rejects missing active covariate columns", {
+  s <- make_cov_fit()
+  s$fit$par["mu.x"] <- 1
+  s$fit$par_oper <- s$fit$par
+  bad <- s$df
+  bad$x <- NULL
+
+  expect_error(
+    marginalize(s$fit, bad, approaches = "C", n_boot = 5L),
+    regexp = "approach C requires columns in `data`: x"
   )
 })
 

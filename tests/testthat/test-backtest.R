@@ -116,6 +116,20 @@ test_that("missing 'y' column in data throws informative error", {
   )
 })
 
+test_that("backtest rejects missing active covariates", {
+  s <- make_backtest_df()
+  # Make the intended active-set membership deterministic for this validation
+  # test, independently of the random fitted coefficient in the helper data.
+  s$fit$par["mu.x"] <- 1
+  bad <- s$df
+  bad$x <- NULL
+
+  expect_error(
+    backtest(s$fit, bad, varname = "y", n_obs = 50L, verbose = FALSE),
+    regexp = "required covariates not found in data: x"
+  )
+})
+
 test_that("not enough years throws informative error", {
   s      <- make_backtest_df()
   df_sub <- s$df[s$df$year <= 1995, ]

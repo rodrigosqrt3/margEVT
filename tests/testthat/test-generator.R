@@ -178,6 +178,65 @@ test_that("univariate generator fitting preserves the caller RNG stream", {
   expect_equal(c(first, second), expected)
 })
 
+test_that("univariate AR selection rejects degenerate candidates", {
+  expect_error(
+    margEVT:::.fit_univariate_ar_bic(rep(0, 20), lag_max = 2L),
+    regexp = "no stable univariate AR candidate"
+  )
+})
+
+test_that("univariate AR selection rejects insufficient effective samples", {
+  # With two observations, an AR(1) candidate has one effective observation,
+  # so it is rejected by the n_eff <= p safeguard deterministically.
+  x <- c(1, 0.5)
+  expect_error(
+    margEVT:::.fit_univariate_ar_bic(x, lag_max = 1L),
+    regexp = "no stable univariate AR candidate"
+  )
+})
+
+test_that("univariate AR selection rejects explosive candidates", {
+  x <- 1.2^seq_len(40L)
+  x[20L] <- x[20L] + 0.01
+
+  expect_error(
+    margEVT:::.fit_univariate_ar_bic(x, lag_max = 1L),
+    regexp = "no stable univariate AR candidate"
+  )
+})
+
+test_that("companion matrix includes lag-shift rows for higher-order models", {
+  A <- matrix(c(0.5, 0.2), nrow = 1L)
+  result <- margEVT:::.companion_matrix(A, K = 1L, p = 2L)
+
+  expect_equal(result, rbind(c(0.5, 0.2), c(1, 0)))
+})
+
+test_that("stationary covariance returns NULL for unsolvable or non-finite cases", {
+  expect_null(
+    margEVT:::.stationary_state_covariance(
+      A = matrix(1, 1L, 1L), Sigma = matrix(1, 1L, 1L),
+      K = 1L, p = 1L
+    )
+  )
+
+  covariance_with_nonfinite_solution <-
+    margEVT:::.stationary_state_covariance
+  environment(covariance_with_nonfinite_solution) <- list2env(
+    list(
+      solve = function(lhs, rhs) rep(Inf, length(rhs)),
+      .companion_matrix = margEVT:::.companion_matrix
+    ),
+    parent = environment(margEVT:::.stationary_state_covariance)
+  )
+  expect_null(
+    covariance_with_nonfinite_solution(
+      A = matrix(0, 1L, 1L), Sigma = matrix(1, 1L, 1L),
+      K = 1L, p = 1L
+    )
+  )
+})
+
 test_that("fit_var_generator guards against near-zero residual sd", {
   fit <- .make_fake_fit()
   df  <- .make_test_data(n_vars = 3L)
@@ -283,6 +342,36 @@ test_that("simulate_covariates is reproducible with the same seed", {
   mc_b <- simulate_covariates(gen, n_mc = 2L, n_obs = 20L, burn_in = 10L, seed = 42L)
 
   expect_equal(mc_a, mc_b)
+})
+
+test_that("simulate_covariates supports legacy generators without stored Sigma", {
+  fit <- .make_fake_fit()
+  df <- .make_test_data()
+  gen <- fit_var_generator(fit, df, vars = c("x1", "x2"))
+  gen$Sigma <- NULL
+
+  mc <- simulate_covariates(
+    gen, n_mc = 1L, n_obs = 10L,
+    initialization = "burnin", burn_in = 5L, seed = 1L
+  )
+  expect_length(mc, 1L)
+  expect_equal(nrow(mc[[1L]]), 10L)
+})
+
+test_that("simulate_covariates reports stationary initialization failure", {
+  fit <- .make_fake_fit()
+  df <- .make_test_data()
+  gen <- fit_var_generator(fit, df, vars = c("x1", "x2"))
+
+  testthat::local_mocked_bindings(
+    .stationary_state_covariance = function(...) NULL
+  )
+  expect_error(
+    simulate_covariates(
+      gen, n_mc = 1L, n_obs = 10L, initialization = "stationary"
+    ),
+    regexp = "stationary initialization failed"
+  )
 })
 
 test_that("stationary and burn-in initialization are both available", {

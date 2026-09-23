@@ -14,6 +14,10 @@ test_that("predict_params with newdata=NULL returns fitted values", {
   fit <- make_fit()
   p   <- predict_params(fit)
   expect_identical(p, fit$fitted)
+  expect_identical(
+    predict_params(fit, operational = FALSE),
+    fit$fitted
+  )
 })
 
 test_that("predict_params returns correct length on newdata", {
@@ -72,6 +76,17 @@ test_that("predict_params uses the operational estimator by default", {
 
   expect_equal(diff(operational$mu), 0)
   expect_false(isTRUE(all.equal(diff(smooth$mu), 0)))
+})
+
+test_that("predict_params supports legacy fits without operational fields", {
+  fit <- make_fit()
+  fit$par["mu.x"] <- 5e-3
+  fit$par_oper <- NULL
+  fit$fitted_oper <- NULL
+  fit$active_tol <- NULL
+
+  predicted <- predict_params(fit, data.frame(x = c(-2, 2)))
+  expect_equal(diff(predicted$mu), 0)
 })
 
 test_that("prediction preserves literal non-syntactic design names", {
