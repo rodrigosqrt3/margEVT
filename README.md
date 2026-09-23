@@ -2,7 +2,7 @@
 
 [![CRAN status](https://www.r-pkg.org/badges/version/margEVT)](https://CRAN.R-project.org/package=margEVT) &nbsp; [![R-CMD-check](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml/badge.svg)](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml) &nbsp; [![codecov](https://codecov.io/gh/rodrigosqrt3/margEVT/branch/main/graph/badge.svg)](https://app.codecov.io/gh/rodrigosqrt3/margEVT)
 
-`margEVT` is an R package developed to conduct non-stationary extreme value analysis under covariate-driven regimes. The package implements the statistical framework developed in Villa (2026) under the supervision of Prof. Dr. Flavio Ziegelmann, coupling a covariate-driven Non-Homogeneous Poisson Process (NHPP) with an Elastic-Net penalized maximum likelihood estimation framework and stochastically marginalized return-level estimation.
+`margEVT` is an R package for non-stationary extreme value analysis under covariate-driven regimes. It couples a covariate-driven Non-Homogeneous Poisson Process (NHPP) with Elastic-Net penalized maximum likelihood and stochastically marginalized return-level estimation.
 
 ---
 
@@ -40,7 +40,7 @@ The optimization is solved via the quasi-Newton BFGS or L-BFGS-B algorithm suppl
 
 $$\nabla_{\boldsymbol{\theta}} Q(\boldsymbol{\theta}; \lambda, \alpha) = -\nabla_{\boldsymbol{\theta}} \ell(\boldsymbol{\theta}) + \nabla_{\boldsymbol{\theta}} P_{\lambda,\alpha}(\boldsymbol{\theta})$$
 
-The optimal regularization path parameter $\lambda^{\ast}$ is selected by minimizing the Bayesian Information Criterion (BIC):
+The regularization path parameter $\lambda^{\ast}$ is selected by minimizing the Bayesian Information Criterion (BIC). Automatic selection can either use score-magnitude calibration across the location, log-scale, and shape blocks (`lambda_scaling = "gradient"`, the default) or a common scalar penalty (`lambda_scaling = "common"`):
 
 $$\text{BIC}(\lambda) = -2\ell(\hat{\boldsymbol{\theta}}_\lambda) + k_\lambda \log(m)$$
 
@@ -64,7 +64,7 @@ To capture long-run risk over the natural variability of the climate system, the
 
 $$G_{\Pi}(z) = \mathbb{E}_{\{\mathbf{v} \sim \Pi\}} \left\lbrack G(z \mid \mathbf{v}) \right\rbrack = \mathbb{E}_{\{\mathbf{v} \sim \Pi\}} \left\lbrack \exp \left\lbrace -\frac{1}{n_{y}} \sum_{j=1}^{n_{y}} \left\lbrack 1 + \xi(t_{j}) \left\lparen \frac{z - \mu(t_{j} \mid \mathbf{v})}{\sigma(t_{j} \mid \mathbf{v})} \right\rparen \right\rbrack_{{+}}^{-1/\xi(t_{j})} \right\rbrace \right\rbrack$$
 
-The joint distribution $\Pi$ is modeled via a stationary Vector Autoregressive process, $\text{VAR}(p)$. The fitted generator verifies that the companion-root spectral radius is below one before simulation. Independent synthetic annual trajectories are generated with separate burn-in periods at the fitted temporal resolution, Fourier seasonality is re-injected, and $G_{\Pi}(z)$ is estimated via Monte Carlo integration over $n_{mc}$ simulated years:
+The joint distribution $\Pi$ is modeled via a stationary Vector Autoregressive process, $\text{VAR}(p)$, or a univariate AR model when only one covariate is required. The fitted generator verifies that the companion-root spectral radius is below one before simulation. Independent synthetic annual trajectories are initialized from the fitted stationary Gaussian state distribution at the fitted temporal resolution, Fourier seasonality is re-injected, and $G_{\Pi}(z)$ is estimated via Monte Carlo integration over $n_{mc}$ simulated years. A zero-state burn-in initialization remains available as a sensitivity option:
 
 $$\hat{G}_{\Pi, B}(z) = \frac{1}{n_{mc}} \sum_{r=1}^{n_{mc}} G(z \mid \mathbf{v}^{(r)})$$
 
@@ -204,6 +204,6 @@ print(rl_wide)
 
 To cite `margEVT` in publications, please use:
 
-> Villa, R. F. (2026). *A Novel Regularized Point Process and Stochastic Marginalization Framework for Return Level Inference under Covariate-Driven Extremes* (Master's dissertation, Instituto de Matemática e Estatística, Universidade Federal do Rio Grande do Sul, Porto Alegre, Brazil. Advisor: Flavio Ziegelmann).
+> Villa, R. F. (2026). *Regularized Poisson Point Process Models and Stochastic Marginalization for Return-Level Inference under Covariate-Driven Extremes* (Master's dissertation, Instituto de Matemática e Estatística, Universidade Federal do Rio Grande do Sul, Porto Alegre, Brazil. Advisor: Flavio Ziegelmann).
 
 Alternatively, run `citation("margEVT")` in R once the package is installed.

@@ -13,6 +13,7 @@
   init,
   obs_per_year = 365.25,
   active_tol = 0.01,
+  lambda_scaling = c("gradient", "common"),
   maxit = 5000L,
   verbose = TRUE
 )

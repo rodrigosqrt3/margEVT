@@ -88,6 +88,23 @@ test_that("annual probabilities reject malformed trajectory stacks", {
   )
 })
 
+test_that("annual probabilities reject invalid fitted parameters", {
+  expect_error(
+    margEVT:::.annual_exceedance_prob(
+      z = 1, mu_t = c(0, NA), sigma_t = c(1, 1),
+      xi_t = c(0, 0), n_obs = 2L
+    ),
+    regexp = "finite"
+  )
+  expect_error(
+    margEVT:::.annual_exceedance_prob(
+      z = 1, mu_t = c(0, 0), sigma_t = c(1, 0),
+      xi_t = c(0, 0), n_obs = 2L
+    ),
+    regexp = "strictly positive"
+  )
+})
+
 test_that("return-level search does not extrapolate below the threshold", {
   root <- margEVT:::.find_return_level(
     TR = 2,
@@ -172,6 +189,54 @@ test_that("interactions are passed through correctly", {
   res  <- marginalize(fit, df, TRs = 10, approaches = "A",
                       scenarios = sc, interactions = ints)
   expect_true(is.finite(res$RL))
+})
+
+test_that("approach C reconstructs active interactions from their inputs", {
+  set.seed(31L)
+  n_years <- 20L
+  n_obs <- 13L
+  n <- n_years * n_obs
+  df <- data.frame(
+    y = c(stats::rexp(n - 30L, 0.3), stats::runif(30L, 5, 20)),
+    a = stats::rnorm(n),
+    b = stats::rnorm(n),
+    year = rep(seq_len(n_years), each = n_obs)
+  )
+  df$ab <- df$a * df$b
+  fit <- fit_nhpp(df, threshold = 4, loc_vars = "ab",
+                  penalty = "none", obs_per_year = n_obs,
+                  verbose = FALSE)
+  fit$par["mu.ab"] <- 0.2
+  fit$par_oper <- fit$par
+  res <- marginalize(
+    fit, df, TRs = 10, approaches = "C", n_obs = n_obs,
+    n_boot = 20L, interactions = list(ab = c("a", "b")), seed = 1L
+  )
+  expect_true(is.finite(res$RL))
+})
+
+test_that("approach B rejects missing interaction inputs", {
+  set.seed(32L)
+  n <- 260L
+  df <- data.frame(
+    y = c(stats::rexp(n - 30L, 0.3), stats::runif(30L, 5, 20)),
+    a = stats::rnorm(n), b = stats::rnorm(n),
+    year = rep(seq_len(20L), each = 13L)
+  )
+  df$ab <- df$a * df$b
+  fit <- fit_nhpp(df, threshold = 4, loc_vars = "ab",
+                  penalty = "none", obs_per_year = 13,
+                  verbose = FALSE)
+  fit$par["mu.ab"] <- 0.2
+  fit$par_oper <- fit$par
+  expect_error(
+    marginalize(
+      fit, df, TRs = 10, approaches = "B", n_obs = 13L,
+      mc_sample = list(data.frame(a = rnorm(13L))),
+      interactions = list(ab = c("a", "b"))
+    ),
+    regexp = "missing required covariates"
+  )
 })
 
 test_that("marginalize rejects invalid inputs", {

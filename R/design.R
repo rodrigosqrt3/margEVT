@@ -38,6 +38,18 @@ build_design_matrices <- function(df, loc_vars = NULL, scale_vars = NULL,
         "build_design_matrices [%s]: columns not found in df: %s",
         label, paste(missing_v, collapse = ", ")
       ))
+    if (anyDuplicated(vars))
+      stop(sprintf(
+        "build_design_matrices [%s]: duplicated covariate names are not allowed.",
+        label
+      ))
+    non_numeric <- vars[!vapply(df[, vars, drop = FALSE],
+                                is.numeric, logical(1L))]
+    if (length(non_numeric) > 0L)
+      stop(sprintf(
+        "build_design_matrices [%s]: covariates must be numeric: %s",
+        label, paste(non_numeric, collapse = ", ")
+      ))
     X <- as.matrix(cbind(1, df[, vars, drop = FALSE]))
     colnames(X)[1L] <- "(Intercept)"
     X

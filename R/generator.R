@@ -19,6 +19,70 @@
   vars::roots(fit_var, modulus = TRUE)
 }
 
+.fit_univariate_ar_bic <- function(x, lag_max) {
+  x <- as.numeric(x)
+  candidates <- lapply(seq_len(lag_max), function(p) {
+    emb <- stats::embed(x, p + 1L)
+    response <- emb[, 1L]
+    predictors <- emb[, -1L, drop = FALSE]
+    fit <- stats::lm.fit(x = predictors, y = response)
+    coefs <- as.numeric(fit$coefficients)
+    residuals <- as.numeric(fit$residuals)
+    if (any(!is.finite(coefs)) || any(!is.finite(residuals))) return(NULL)
+    rss <- sum(residuals^2)
+    n_eff <- length(residuals)
+    if (!is.finite(rss) || rss <= 0 || n_eff <= p) return(NULL)
+    companion <- if (p == 1L) matrix(coefs, 1L, 1L) else
+      rbind(matrix(coefs, 1L, p),
+            cbind(diag(p - 1L), matrix(0, p - 1L, 1L)))
+    roots <- Mod(eigen(companion, only.values = TRUE)$values)
+    rho <- max(roots)
+    if (!is.finite(rho) || rho >= 1) return(NULL)
+    list(p = p, A = matrix(coefs, nrow = 1L),
+         residuals = matrix(residuals, ncol = 1L),
+         bic = n_eff * log(rss / n_eff) + p * log(n_eff),
+         root_moduli = roots, spectral_radius = rho)
+  })
+  candidates <- Filter(Negate(is.null), candidates)
+  if (length(candidates) == 0L)
+    stop("fit_var_generator: no stable univariate AR candidate was available.")
+  candidates[[which.min(vapply(candidates, `[[`, numeric(1L), "bic"))]]
+}
+
+.companion_matrix <- function(A, K, p) {
+  if (p == 1L) return(A)
+  lower <- cbind(diag(K * (p - 1L)), matrix(0, K * (p - 1L), K))
+  rbind(A, lower)
+}
+
+.stationary_state_covariance <- function(A, Sigma, K, p) {
+  Fmat <- .companion_matrix(A, K, p)
+  d <- K * p
+  Q <- matrix(0, d, d)
+  Q[seq_len(K), seq_len(K)] <- Sigma
+  lhs <- diag(d * d) - kronecker(Fmat, Fmat)
+  vec_p <- tryCatch(solve(lhs, as.vector(Q)), error = function(e) NULL)
+  if (is.null(vec_p)) return(NULL)
+  P <- matrix(vec_p, d, d)
+  P <- (P + t(P)) / 2
+  if (any(!is.finite(P))) NULL else P
+}
+
+.rmvnorm_psd <- function(Sigma) {
+  eig <- eigen((Sigma + t(Sigma)) / 2, symmetric = TRUE)
+  values <- pmax(eig$values, 0)
+  as.numeric(eig$vectors %*% (sqrt(values) * stats::rnorm(length(values))))
+}
+
+.regularize_covariance <- function(Sigma, relative_floor = 1e-10) {
+  Sigma <- (Sigma + t(Sigma)) / 2
+  eig <- eigen(Sigma, symmetric = TRUE)
+  scale_ref <- max(1, max(abs(eig$values)))
+  values <- pmax(eig$values, relative_floor * scale_ref)
+  out <- eig$vectors %*% (values * t(eig$vectors))
+  (out + t(out)) / 2
+}
+
 #' Fit a generic VAR generator over a model's active covariates
 #'
 #' Deseasonalizes each active covariate column in \code{data} (regressing
@@ -114,22 +178,30 @@ fit_var_generator <- function(fit, data, vars = NULL, period = NULL,
 
   K <- length(vars)
   resid_sel <- resid_mat
-  if (K == 1L) {
-    # vars::VAR needs K >= 2; pad with noise, drop it again at simulation time
-    resid_sel <- cbind(resid_mat, .dummy_noise = stats::rnorm(nrow(resid_mat)))
-  }
 
   if (is.null(lag_max))
     lag_max <- max(1L, min(5L, floor(nrow(resid_sel) / (3L * ncol(resid_sel)))))
+  lag_max <- min(as.integer(lag_max), max(1L, nrow(resid_sel) - 2L))
 
-  p_opt <- as.integer(.select_var_order(resid_sel, lag_max))
-  if (!is.finite(p_opt))
-    stop("fit_var_generator: VAR lag selection did not return a finite order.")
-  p_opt <- max(1L, p_opt)
-
-  fit_var <- vars::VAR(resid_sel, p = p_opt, type = "none")
-  root_moduli <- .var_root_moduli(fit_var)
-  spectral_radius <- if (length(root_moduli) == 0L) 0 else max(root_moduli)
+  if (K == 1L) {
+    ar_fit <- .fit_univariate_ar_bic(resid_sel[, 1L], lag_max)
+    p_opt <- ar_fit$p
+    fit_var <- NULL
+    A <- ar_fit$A
+    residual_matrix <- ar_fit$residuals
+    root_moduli <- ar_fit$root_moduli
+    spectral_radius <- ar_fit$spectral_radius
+  } else {
+    p_opt <- as.integer(.select_var_order(resid_sel, lag_max))
+    if (!is.finite(p_opt))
+      stop("fit_var_generator: VAR lag selection did not return a finite order.")
+    p_opt <- max(1L, p_opt)
+    fit_var <- vars::VAR(resid_sel, p = p_opt, type = "none")
+    A <- vars::Bcoef(fit_var)
+    residual_matrix <- as.matrix(stats::residuals(fit_var))
+    root_moduli <- .var_root_moduli(fit_var)
+    spectral_radius <- if (length(root_moduli) == 0L) 0 else max(root_moduli)
+  }
   if (!is.finite(spectral_radius) || spectral_radius >= 1)
     stop(sprintf(
       paste0(
@@ -145,11 +217,15 @@ fit_var_generator <- function(fit, data, vars = NULL, period = NULL,
       vars            = vars,
       seasonal_models = seasonal_models,
       fit_var         = fit_var,
+      A               = A,
+      Sigma           = crossprod(residual_matrix) / nrow(residual_matrix),
+      residuals       = residual_matrix,
+      K               = K,
       p_opt           = p_opt,
       root_moduli     = root_moduli,
       spectral_radius = spectral_radius,
       period          = period,
-      var_colnames    = colnames(resid_sel)
+      var_colnames    = vars
     ),
     class = "nhpp_var_generator"
   )
@@ -163,9 +239,11 @@ fit_var_generator <- function(fit, data, vars = NULL, period = NULL,
 #' @param n_mc Integer. Number of independently simulated annual trajectories.
 #' @param n_obs Integer observations per simulated year. If \code{NULL},
 #'   uses the rounded seasonal period stored in \code{generator}.
-#' @param burn_in Integer. Burn-in applied separately to each trajectory to
-#'   reduce transient VAR dynamics. Default \code{300L}; adequacy should be
-#'   assessed for highly persistent fitted systems.
+#' @param burn_in Integer. Burn-in applied separately when
+#'   \code{initialization = "burnin"}. Default \code{300L}.
+#' @param initialization Character. \code{"stationary"} (default) draws the
+#'   initial companion state from the fitted stationary Gaussian law;
+#'   \code{"burnin"} starts at zero and applies \code{burn_in} transitions.
 #' @param seed Integer. Random seed. Default \code{NULL} (not set).
 #'
 #' @return A list of length \code{n_mc}, each element an \code{n_obs}-row
@@ -174,7 +252,9 @@ fit_var_generator <- function(fit, data, vars = NULL, period = NULL,
 #'
 #' @export
 simulate_covariates <- function(generator, n_mc, n_obs = NULL,
-                                burn_in = 300L, seed = NULL) {
+                                burn_in = 300L,
+                                initialization = c("stationary", "burnin"),
+                                seed = NULL) {
 
   if (is.null(generator)) return(NULL)
   if (!inherits(generator, "nhpp_var_generator"))
@@ -187,6 +267,7 @@ simulate_covariates <- function(generator, n_mc, n_obs = NULL,
     stop("simulate_covariates: `burn_in` must be a non-negative integer.")
   n_mc   <- as.integer(n_mc)
   burn_in <- as.integer(burn_in)
+  initialization <- match.arg(initialization)
 
   if (!is.null(seed)) set.seed(seed)
 
@@ -195,26 +276,41 @@ simulate_covariates <- function(generator, n_mc, n_obs = NULL,
     as.integer(n_obs)
   if (!is.finite(n_obs) || n_obs < 1L)
     stop("simulate_covariates: `n_obs` must be a positive integer.")
-  K      <- generator$fit_var$K
-  p      <- generator$fit_var$p
-  A      <- vars::Bcoef(generator$fit_var)
-  resids <- stats::residuals(generator$fit_var)
-  Sigma  <- crossprod(resids) / nrow(resids)
-  chol_S <- t(chol(Sigma + diag(1e-8, K)))
+  K <- if (is.null(generator$K)) generator$fit_var$K else generator$K
+  p <- generator$p_opt
+  A <- if (is.null(generator$A)) vars::Bcoef(generator$fit_var) else generator$A
+  Sigma_raw <- if (is.null(generator$Sigma)) {
+    resids <- stats::residuals(generator$fit_var)
+    crossprod(resids) / nrow(resids)
+  } else generator$Sigma
+  Sigma <- .regularize_covariance(Sigma_raw)
+  chol_S <- t(chol(Sigma))
+  stationary_covariance <- if (initialization == "stationary")
+    .stationary_state_covariance(A, Sigma, K, p) else NULL
+  if (initialization == "stationary" && is.null(stationary_covariance))
+    stop("simulate_covariates: stationary initialization failed; use initialization='burnin' for a sensitivity analysis.")
 
   simulate_path <- function() {
-    sim_pad <- matrix(0, nrow = n_obs + burn_in + p, ncol = K)
-    colnames(sim_pad) <- generator$var_colnames
-
-    for (t in (p + 1L):nrow(sim_pad)) {
-      y_lag <- numeric(K * p)
-      for (i in seq_len(p))
-        y_lag[((i - 1L) * K + 1L):(i * K)] <- sim_pad[t - i, ]
-      sim_pad[t, ] <- as.numeric(A %*% y_lag) +
-        as.numeric(chol_S %*% stats::rnorm(K))
+    state <- if (initialization == "stationary")
+      .rmvnorm_psd(stationary_covariance) else numeric(K * p)
+    if (initialization == "burnin" && burn_in > 0L) {
+      for (b in seq_len(burn_in)) {
+        new_y <- as.numeric(A %*% state) +
+          as.numeric(chol_S %*% stats::rnorm(K))
+        state <- if (p == 1L) new_y else
+          c(new_y, state[seq_len(K * (p - 1L))])
+      }
     }
-
-    sim_pad[(burn_in + p + 1L):nrow(sim_pad), , drop = FALSE]
+    ans <- matrix(NA_real_, nrow = n_obs, ncol = K,
+                  dimnames = list(NULL, generator$var_colnames))
+    for (tt in seq_len(n_obs)) {
+      new_y <- as.numeric(A %*% state) +
+        as.numeric(chol_S %*% stats::rnorm(K))
+      ans[tt, ] <- new_y
+      state <- if (p == 1L) new_y else
+        c(new_y, state[seq_len(K * (p - 1L))])
+    }
+    ans
   }
 
   # Each annual Monte Carlo trajectory is an independent replication. This

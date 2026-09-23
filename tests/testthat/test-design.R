@@ -34,3 +34,15 @@ test_that("missing column throws informative error", {
     regexp = "columns not found"
   )
 })
+
+test_that("design matrices reject duplicated and non-numeric covariates", {
+  df <- data.frame(a = 1:5, group = letters[1:5])
+  expect_error(
+    build_design_matrices(df, loc_vars = c("a", "a")),
+    regexp = "duplicated"
+  )
+  expect_error(
+    build_design_matrices(df, loc_vars = "group"),
+    regexp = "must be numeric"
+  )
+})

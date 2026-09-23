@@ -17,6 +17,7 @@ backtest(
   interactions = list(),
   year_col = "year",
   min_obs_year = NULL,
+  seed = 2024L,
   verbose = TRUE
 )
 }
@@ -56,6 +57,9 @@ within each window. Default \code{200L}.}
 \item{min_obs_year}{Integer. Minimum observations in a validation year
 for it to be included. Default \code{as.integer(n_obs * 0.8)}.}
 
+\item{seed}{Integer. Seed used for empirical annual-block sampling.
+Default \code{2024L}. Each validation window uses a distinct derived seed.}
+
 \item{verbose}{Logical. Print progress. Default \code{TRUE}.}
 }
 \value{
@@ -78,6 +82,6 @@ training data at the original penalty and lambda, return levels are
 computed, and exceedance rates are compared to nominal rates via
 binomial tests. A Kolmogorov-Smirnov comparison on tail-conditional PIT
 values is returned as an exploratory diagnostic; it is not a formal test
-of global predictive calibration. Validation years below
-code{min_obs_year} observed values are excluded from binomial denominators.
+of global predictive calibration. Validation years with fewer than
+\code{min_obs_year} observed values are excluded from binomial denominators.
 }

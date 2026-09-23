@@ -152,14 +152,30 @@ test_that("fit_var_generator reuses existing seasonal columns when present", {
   expect_equal(gen$spectral_radius, max(gen$root_moduli))
 })
 
-test_that("fit_var_generator pads a single covariate with dummy noise for VAR", {
+test_that("fit_var_generator uses a genuine univariate AR model", {
   fit <- .make_fake_fit()
   df  <- .make_test_data(n_vars = 2L)
   gen <- fit_var_generator(fit, df, vars = "x1")
   expect_s3_class(gen, "nhpp_var_generator")
   expect_identical(gen$vars, "x1")
-  expect_true(".dummy_noise" %in% gen$var_colnames)
-  expect_identical(gen$fit_var$K, 2L)
+  expect_identical(gen$K, 1L)
+  expect_null(gen$fit_var)
+  expect_equal(nrow(gen$A), 1L)
+  expect_true(gen$spectral_radius < 1)
+})
+
+test_that("univariate generator fitting preserves the caller RNG stream", {
+  fit <- .make_fake_fit()
+  df <- .make_test_data(n_vars = 2L)
+  set.seed(987L)
+  expected <- runif(2L)
+
+  set.seed(987L)
+  first <- runif(1L)
+  fit_var_generator(fit, df, vars = "x1")
+  second <- runif(1L)
+
+  expect_equal(c(first, second), expected)
 })
 
 test_that("fit_var_generator guards against near-zero residual sd", {
@@ -227,6 +243,8 @@ test_that("simulate_covariates validates simulation dimensions", {
   expect_error(simulate_covariates(gen, n_mc = 0), "n_mc")
   expect_error(simulate_covariates(gen, n_mc = 1, burn_in = -1), "burn_in")
   expect_error(simulate_covariates(gen, n_mc = 1, n_obs = 0), "n_obs")
+  expect_error(simulate_covariates(gen, n_mc = 1,
+                                   initialization = "unknown"), "arg")
 })
 
 test_that("simulate_covariates produces the right shape and column names", {
@@ -265,6 +283,23 @@ test_that("simulate_covariates is reproducible with the same seed", {
   mc_b <- simulate_covariates(gen, n_mc = 2L, n_obs = 20L, burn_in = 10L, seed = 42L)
 
   expect_equal(mc_a, mc_b)
+})
+
+test_that("stationary and burn-in initialization are both available", {
+  fit <- .make_fake_fit()
+  df <- .make_test_data()
+  gen <- fit_var_generator(fit, df, vars = c("x1", "x2"))
+  stationary <- simulate_covariates(
+    gen, n_mc = 2L, n_obs = 20L,
+    initialization = "stationary", seed = 1L
+  )
+  burnin <- simulate_covariates(
+    gen, n_mc = 2L, n_obs = 20L, burn_in = 50L,
+    initialization = "burnin", seed = 1L
+  )
+  expect_equal(vapply(stationary, nrow, integer(1L)), c(20L, 20L))
+  expect_equal(vapply(burnin, nrow, integer(1L)), c(20L, 20L))
+  expect_false(isTRUE(all.equal(stationary, burnin)))
 })
 
 test_that("simulate_covariates runs without error when seed is NULL", {

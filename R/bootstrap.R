@@ -33,13 +33,17 @@
   if (any(!is.finite(sig_gpd)) || any(sig_gpd <= 0))
     stop("bootstrap: invalid GPD scale at threshold - check model parameters.")
 
-  u_unif <- stats::runif(length(exc_idx))
-
-  ifelse(
-    abs(xi_e) < 1e-6,
-    -sig_gpd * log(u_unif),                              # Exponential limit
-    (sig_gpd / xi_e) * (u_unif^(-xi_e) - 1)             # GPD quantile
-  )
+  u_unif <- pmin(pmax(stats::runif(length(exc_idx)),
+                      .Machine$double.eps),
+                 1 - .Machine$double.eps)
+  out <- numeric(length(exc_idx))
+  gumbel <- abs(xi_e) < 1e-6
+  out[gumbel] <- -sig_gpd[gumbel] * log1p(-u_unif[gumbel])
+  out[!gumbel] <- sig_gpd[!gumbel] *
+    expm1(-xi_e[!gumbel] * log1p(-u_unif[!gumbel])) / xi_e[!gumbel]
+  if (any(!is.finite(out)) || any(out < 0))
+    stop("bootstrap: generated an invalid GPD excess.")
+  out
 }
 
 # -----------------------------------------------------------------------------
@@ -139,6 +143,9 @@ bootstrap_rl <- function(fit, data,
     stop("bootstrap_rl: `fit` must be an nhpp_fit object.")
   if (!is.data.frame(data))
     stop("bootstrap_rl: `data` must be a data frame.")
+  if (!"y" %in% names(data) || !is.numeric(data$y) ||
+      any(!is.finite(data$y)))
+    stop("bootstrap_rl: `data$y` must contain only finite numeric values.")
   if (!approach %in% c("A", "B", "C"))
     stop("bootstrap_rl: `approach` must be one of 'A', 'B', 'C'.")
   if (!is.numeric(TRs) || length(TRs) < 1L ||
@@ -265,6 +272,9 @@ bootstrap_coef <- function(fit, data,
     stop("bootstrap_coef: `fit` must be an nhpp_fit object.")
   if (!is.data.frame(data))
     stop("bootstrap_coef: `data` must be a data frame.")
+  if (!"y" %in% names(data) || !is.numeric(data$y) ||
+      any(!is.finite(data$y)))
+    stop("bootstrap_coef: `data$y` must contain only finite numeric values.")
   if (!is.numeric(R) || length(R) != 1L || !is.finite(R) || R < 1)
     stop("bootstrap_coef: `R` must be a positive integer.")
   if (!is.numeric(level) || length(level) != 1L ||
@@ -304,8 +314,9 @@ bootstrap_coef <- function(fit, data,
     fit_b <- .refit_boot(df_boot, fit)
     if (is.null(fit_b) || !fit_b$converged) next
 
-    common <- intersect(names(fit$par), names(fit_b$par))
-    boot_coef[b, common] <- fit_b$par[common]
+    par_b <- if (is.null(fit_b$par_oper)) fit_b$par else fit_b$par_oper
+    common <- intersect(names(fit$par), names(par_b))
+    boot_coef[b, common] <- par_b[common]
 
     if (verbose && (b %% 25L == 0L || b == R))
       message(sprintf("  replicate %d / %d", b, R))
@@ -315,7 +326,8 @@ bootstrap_coef <- function(fit, data,
     v <- stats::na.omit(boot_coef[, nm])
     data.frame(
       parameter = nm,
-      estimate  = round(fit$par[nm],                        5L),
+      estimate  = round(if (is.null(fit$par_oper)) fit$par[nm] else
+        fit$par_oper[nm],                 5L),
       CI_low    = if (length(v) >= 5L)
         round(stats::quantile(v, alpha_tail),       5L) else NA_real_,
       CI_high   = if (length(v) >= 5L)

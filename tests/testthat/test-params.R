@@ -55,7 +55,51 @@ test_that("predict_params rejects non nhpp_fit input", {
 test_that("predict_params rejects non-data.frame newdata", {
   fit <- make_fit()
   expect_error(
-  predict_params(fit, newdata = list(x = 1:10)),
-  regexp = "must be a data frame"
+    predict_params(fit, newdata = list(x = 1:10)),
+    regexp = "must be a data frame"
+  )
+})
+
+test_that("predict_params uses the operational estimator by default", {
+  fit <- make_fit()
+  fit$par["mu.x"] <- 5e-3
+  fit$par_oper <- fit$par
+  fit$par_oper["mu.x"] <- 0
+  newdata <- data.frame(x = c(-2, 2))
+
+  operational <- predict_params(fit, newdata)
+  smooth <- predict_params(fit, newdata, operational = FALSE)
+
+  expect_equal(diff(operational$mu), 0)
+  expect_false(isTRUE(all.equal(diff(smooth$mu), 0)))
+})
+
+test_that("prediction preserves literal non-syntactic design names", {
+  set.seed(12L)
+  n <- 240L
+  df <- data.frame(y = c(rexp(n, 0.5), runif(20L, 5, 15)),
+                   check.names = FALSE)
+  df[["a:b"]] <- rnorm(n + 20L)
+  fit <- fit_nhpp(df, threshold = 4, loc_vars = "a:b",
+                  penalty = "none", verbose = FALSE)
+  nd <- data.frame(value = c(-1, 1), check.names = FALSE)
+  names(nd) <- "a:b"
+  expect_length(predict_params(fit, nd)$mu, 2L)
+})
+
+test_that("predict_params validates operational flag", {
+  fit <- make_fit()
+  expect_error(predict_params(fit, operational = NA), "operational")
+})
+
+test_that("predict_params rejects non-numeric and non-finite predictors", {
+  fit <- make_fit()
+  expect_error(
+    predict_params(fit, data.frame(x = letters[1:2])),
+    regexp = "must be numeric"
+  )
+  expect_error(
+    predict_params(fit, data.frame(x = c(0, Inf))),
+    regexp = "finite"
   )
 })

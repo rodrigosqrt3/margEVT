@@ -33,8 +33,11 @@
                                penalize_shape, init,
                                obs_per_year = 365.25,
                                active_tol   = 1e-2,
+                               lambda_scaling = c("gradient", "common"),
                                maxit        = 5000L,
                                verbose      = TRUE) {
+
+  lambda_scaling <- match.arg(lambda_scaling)
 
   p_mu  <- ncol(dm$X_mu)
   p_sig <- ncol(dm$X_sigma)
@@ -47,34 +50,35 @@
     if (penalize_shape) p_mu + p_sig + dm$idx_pen_xi else integer(0L)
   )
 
-  # Block-calibrated lambda ratios
-  # Scale each block's lambda by its gradient magnitude at the null model,
-  # so that all blocks are penalized proportionally to their natural scale.
-  null_grad <- pp_grad(init, dm, y, threshold,
-                       lambda = 0, alpha = 1,
-                       pen_xi = penalize_shape,
-                       obs_per_year = obs_per_year)
+  ratio_sigma <- ratio_xi <- 1
+  if (lambda_scaling == "gradient") {
+    # Scale each block's lambda by its score magnitude at the initial model.
+    # This is a numerical calibration, not an adaptive-LASSO weight.
+    null_grad <- pp_grad(init, dm, y, threshold,
+                         lambda = 0, alpha = 1,
+                         pen_xi = penalize_shape,
+                         obs_per_year = obs_per_year)
 
-  g_mu    <- null_grad[dm$idx_pen_mu]
-  g_sigma <- null_grad[p_mu + dm$idx_pen_sigma]
-  g_xi    <- if (length(dm$idx_pen_xi) > 0L)
-    null_grad[p_mu + p_sig + dm$idx_pen_xi] else numeric(0L)
+    g_mu    <- null_grad[dm$idx_pen_mu]
+    g_sigma <- null_grad[p_mu + dm$idx_pen_sigma]
+    g_xi    <- if (length(dm$idx_pen_xi) > 0L)
+      null_grad[p_mu + p_sig + dm$idx_pen_xi] else numeric(0L)
 
-  scale_mu    <- sqrt(mean(g_mu^2))
-  scale_sigma <- if (length(g_sigma) > 0L) sqrt(mean(g_sigma^2)) else scale_mu
-  scale_xi    <- if (length(g_xi)    > 0L) sqrt(mean(g_xi^2))    else scale_mu
+    scale_mu    <- sqrt(mean(g_mu^2))
+    scale_sigma <- if (length(g_sigma) > 0L) sqrt(mean(g_sigma^2)) else scale_mu
+    scale_xi    <- if (length(g_xi)    > 0L) sqrt(mean(g_xi^2))    else scale_mu
 
-  # Protect against degenerate cases
-  if (!is.finite(scale_mu) || scale_mu == 0) scale_mu <- 1
-  ratio_sigma <- if (is.finite(scale_sigma) && scale_sigma > 0)
-    scale_sigma / scale_mu else 1
-  ratio_xi    <- if (is.finite(scale_xi)    && scale_xi    > 0)
-    scale_xi    / scale_mu else 1
+    if (!is.finite(scale_mu) || scale_mu == 0) scale_mu <- 1
+    ratio_sigma <- if (is.finite(scale_sigma) && scale_sigma > 0)
+      scale_sigma / scale_mu else 1
+    ratio_xi <- if (is.finite(scale_xi) && scale_xi > 0)
+      scale_xi / scale_mu else 1
+  }
 
   if (verbose)
     message(sprintf(
-      "  Block lambda ratios -> sigma: %.3f | xi: %.3f",
-      ratio_sigma, ratio_xi
+      "  Lambda scaling: %s | ratios -> sigma: %.3f | xi: %.3f",
+      lambda_scaling, ratio_sigma, ratio_xi
     ))
 
   .bic_at <- function(lam_base, init_par) {
@@ -90,15 +94,28 @@
                           calc_hessian   = FALSE,
                           obs_per_year   = obs_per_year)
     if (!res$converged || !is.finite(res$nllh_raw))
-      return(list(bic = NA_real_, par = init_par, lam = lam))
+      return(list(bic = NA_real_, par_smooth = init_par,
+                  par_oper = init_par, lam = lam))
 
-    par_hat <- res$par
-    # Hard threshold near-zero coefficients for BIC counting
-    for (j in pen_idx_all) if (abs(par_hat[j]) < active_tol) par_hat[j] <- 0
-    k_active <- sum(par_hat[pen_idx_all] != 0) +
-      (length(par_hat) - length(pen_idx_all))
-    bic <- 2 * res$nllh_raw + k_active * log(n_exc)
-    list(bic = bic, par = par_hat, lam = lam)
+    par_smooth <- res$par
+    par_oper   <- par_smooth
+    # The operational estimator defines both the BIC likelihood and its
+    # effective parameter count. The smooth optimizer solution remains the
+    # warm start for the next lambda on the path.
+    for (j in pen_idx_all)
+      if (abs(par_oper[j]) < active_tol) par_oper[j] <- 0
+    nllh_oper <- pp_nllh(par_oper, dm, y, threshold,
+                         lambda = 0, alpha = alpha,
+                         pen_xi = penalize_shape,
+                         obs_per_year = obs_per_year)
+    if (!is.finite(nllh_oper) || nllh_oper >= 1e9)
+      return(list(bic = NA_real_, par_smooth = init_par,
+                  par_oper = init_par, lam = lam))
+    k_active <- sum(par_oper[pen_idx_all] != 0) +
+      (length(par_oper) - length(pen_idx_all))
+    bic <- 2 * nllh_oper + k_active * log(n_exc)
+    list(bic = bic, par_smooth = par_smooth,
+         par_oper = par_oper, lam = lam)
   }
 
   # Phase 1: coarse grid
@@ -112,8 +129,8 @@
   for (i in seq_along(grid_coarse)) {
     out <- .bic_at(grid_coarse[i], cur_init)
     bic_coarse[i]  <- out$bic
-    par_coarse[[i]] <- out$par
-    if (!is.na(out$bic)) cur_init <- out$par
+    par_coarse[[i]] <- out$par_smooth
+    if (!is.na(out$bic)) cur_init <- out$par_smooth
 
     if (verbose)
       message(sprintf("    [%2d/40] lambda=%.4f  BIC=%.2f",
@@ -159,8 +176,8 @@
   for (i in seq_along(grid_fine)) {
     out <- .bic_at(grid_fine[i], cur_init)
     bic_fine[i]  <- out$bic
-    par_fine[[i]] <- out$par
-    if (!is.na(out$bic)) cur_init <- out$par
+    par_fine[[i]] <- out$par_smooth
+    if (!is.na(out$bic)) cur_init <- out$par_smooth
 
     if (verbose)
       message(sprintf("    [%2d/25] lambda=%.5f  BIC=%.2f",

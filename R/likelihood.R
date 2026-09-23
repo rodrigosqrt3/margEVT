@@ -41,8 +41,10 @@ pp_nllh <- function(par, dm, y, threshold,
   sig_t <- exp(as.numeric(X_sig %*% beta_sig))
   xi_t  <- as.numeric(X_xi  %*% beta_xi)
 
+  if (any(!is.finite(mu_t)) || any(!is.finite(sig_t)) ||
+      any(sig_t <= 0) || any(!is.finite(xi_t))) return(1e9)
   z_u <- 1 + xi_t * (threshold - mu_t) / sig_t
-  if (any(z_u <= 0, na.rm = TRUE)) return(1e9)
+  if (any(!is.finite(z_u)) || any(z_u <= 0)) return(1e9)
 
   gumbel <- abs(xi_t) < 1e-6
   tau    <- numeric(length(mu_t))
@@ -59,7 +61,7 @@ pp_nllh <- function(par, dm, y, threshold,
     sig_e <- sig_t[exc_idx]
     xi_e  <- xi_t[exc_idx]
     z_e   <- 1 + xi_e * (y_e - mu_e) / sig_e
-    if (any(z_e <= 0, na.rm = TRUE)) return(1e9)
+    if (any(!is.finite(z_e)) || any(z_e <= 0)) return(1e9)
     gum_e <- abs(xi_e) < 1e-6
     lf    <- numeric(length(y_e))
     lf[ gum_e] <- -log(sig_e[gum_e])  - (y_e[gum_e]  - mu_e[gum_e])  / sig_e[gum_e]

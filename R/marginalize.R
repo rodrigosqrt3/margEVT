@@ -49,12 +49,17 @@
       length(mu_t) != length(sigma_t) || length(mu_t) != length(xi_t) ||
       length(mu_t) == 0L || length(mu_t) %% n_obs != 0L)
     stop(".annual_exceedance_prob: parameter vectors must have equal, positive lengths divisible by `n_obs`.")
+  if (any(!is.finite(mu_t)) || any(!is.finite(sigma_t)) ||
+      any(sigma_t <= 0) || any(!is.finite(xi_t)))
+    stop(".annual_exceedance_prob: model parameters must be finite and scales strictly positive.")
   lam_vec <- .tail_measure_at_level(z, mu_t, sigma_t, xi_t)
+  if (any(is.na(lam_vec)) || any(lam_vec < 0))
+    stop(".annual_exceedance_prob: invalid tail measure encountered.")
 
   n_mc    <- as.integer(length(mu_t) / n_obs)
   lam_mat <- matrix(lam_vec, nrow = n_obs, ncol = n_mc)
 
-  mean(exp(-colSums(lam_mat, na.rm = TRUE) / n_obs), na.rm = TRUE)
+  mean(exp(-colSums(lam_mat) / n_obs))
 }
 
 # -----------------------------------------------------------------------------
@@ -193,6 +198,14 @@ marginalize <- function(fit, data,
       z_hi <= z_lo)
     stop("marginalize: `z_hi` must be a finite value greater than the threshold.")
   ac     <- active_covariates(fit)
+  interaction_outputs <- names(interactions)
+  relevant_interactions <- if (is.null(ac)) list() else
+    interactions[interaction_outputs %in% ac]
+  interaction_inputs <- unique(unlist(relevant_interactions,
+                                      use.names = FALSE))
+  direct_active <- if (is.null(ac)) character(0L) else
+    setdiff(ac, interaction_outputs)
+  required_covariates <- unique(c(direct_active, interaction_inputs))
 
   results <- list()
 
@@ -219,6 +232,17 @@ marginalize <- function(fit, data,
 
   # B. Parametric Monte Carlo
   if ("B" %in% approaches) {
+    missing_by_year <- vapply(mc_sample, function(yr_df)
+      length(setdiff(required_covariates, names(yr_df))) > 0L, logical(1L))
+    if (any(missing_by_year)) {
+      first_bad <- which(missing_by_year)[1L]
+      missing_names <- setdiff(required_covariates,
+                               names(mc_sample[[first_bad]]))
+      stop(sprintf(
+        "marginalize: mc_sample[[%d]] is missing required covariates: %s",
+        first_bad, paste(missing_names, collapse = ", ")
+      ))
+    }
     cov_B     <- lapply(mc_sample, function(yr_df)
       build_cov_annual(fit, as.list(yr_df), n_obs = n_obs,
                        period = period,
@@ -241,7 +265,11 @@ marginalize <- function(fit, data,
     if (!year_col %in% names(data))
       stop(sprintf("marginalize: column '%s' not found in data.", year_col))
 
-    ac_in_data <- if (!is.null(ac)) ac[ac %in% names(data)] else character(0L)
+    missing_required <- setdiff(required_covariates, names(data))
+    if (length(missing_required) > 0L)
+      stop("marginalize: approach C requires columns in `data`: ",
+           paste(missing_required, collapse = ", "))
+    ac_in_data <- required_covariates
 
     if (length(ac_in_data) == 0L) {
       # Stationary model: no covariates to resample, just build one empty frame

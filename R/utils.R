@@ -125,7 +125,8 @@ summary.nhpp_fit <- function(object, tol = NULL, ...) {
 bic_nhpp <- function(fit, tol = NULL) {
   if (!inherits(fit, "nhpp_fit"))
     stop("bic_nhpp: `fit` must be an nhpp_fit object.")
-  if (!is.finite(fit$nllh_raw))
+  nllh_bic <- if (!is.null(fit$nllh_oper)) fit$nllh_oper else fit$nllh_raw
+  if (!is.finite(nllh_bic))
     return(NA_real_)
   tol <- if (is.null(tol)) {
     if (is.null(fit$active_tol)) 1e-2 else fit$active_tol
@@ -134,7 +135,7 @@ bic_nhpp <- function(fit, tol = NULL) {
     stop("bic_nhpp: `tol` must be a single positive numeric value.")
 
   k_active <- sum(.active_parameter_mask(fit, tol))
-  2 * fit$nllh_raw + k_active * log(fit$n_exc)
+  2 * nllh_bic + k_active * log(fit$n_exc)
 }
 
 
@@ -213,9 +214,10 @@ rl_table <- function(marg_result) {
 plot.nhpp_fit <- function(x, type = c("intensity", "fitted"), ...) {
   type <- match.arg(type)
 
-  mu_t  <- x$fitted$mu
-  sig_t <- x$fitted$sigma
-  xi_t  <- x$fitted$xi
+  fitted <- if (is.null(x$fitted_oper)) x$fitted else x$fitted_oper
+  mu_t  <- fitted$mu
+  sig_t <- fitted$sigma
+  xi_t  <- fitted$xi
   u     <- x$threshold
   n_y   <- x$obs_per_year
 

@@ -17,6 +17,7 @@ fit_nhpp(
   penalize_shape = TRUE,
   obs_per_year = 365.25,
   active_tol = 0.01,
+  lambda_scaling = c("gradient", "common"),
   maxit = 10000L,
   calc_hessian = FALSE,
   verbose = TRUE
@@ -61,6 +62,11 @@ for daily data, \code{52} for weekly. Default \code{365.25}.}
 \item{active_tol}{Positive numeric tolerance used for BIC complexity
 counting, active-covariate extraction, and default coefficient reporting.
 Default \code{1e-2}.}
+
+\item{lambda_scaling}{Character. Scaling used when \code{lambda = "bic"}:
+\code{"gradient"} calibrates the scale and shape penalties relative to
+the location-block score magnitude; \code{"common"} applies the same
+scalar lambda to all parameter blocks. Ignored for numeric \code{lambda}.}
 
 \item{maxit}{Integer. Maximum optimizer iterations. Default \code{10000L}.}
 

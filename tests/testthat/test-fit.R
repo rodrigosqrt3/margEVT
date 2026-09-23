@@ -20,6 +20,19 @@ test_that("fit_nhpp stores a user-supplied activity tolerance", {
   expect_equal(fit$active_tol, 5e-3)
 })
 
+test_that("fit_nhpp stores smooth and operational coefficient vectors", {
+  df <- make_test_df()
+  fit <- fit_nhpp(df, threshold = 4, loc_vars = "x",
+                  penalty = "lasso", lambda = 500,
+                  active_tol = 1e-2, verbose = FALSE)
+  expect_named(fit$par_oper, names(fit$par))
+  expected_x <- if (abs(fit$par["mu.x"]) < fit$active_tol) 0 else
+    unname(fit$par["mu.x"])
+  expect_equal(unname(fit$par_oper["mu.x"]), expected_x)
+  expect_true(is.finite(fit$nllh_oper))
+  expect_named(coef(fit, operational = TRUE), names(fit$par))
+})
+
 test_that("penalty=none gives lambda=0 and correct parameter names", {
   df  <- make_test_df()
   fit <- fit_nhpp(df, threshold = 4, penalty = "none", verbose = FALSE)
@@ -172,6 +185,25 @@ test_that("fit_nhpp accepts named block-specific controls", {
   )
   expect_equal(names(fit$alpha), c("mu", "sigma", "xi"))
   expect_equal(names(fit$lambda), c("mu", "sigma", "xi"))
+})
+
+test_that("common BIC scaling applies the same lambda to all blocks", {
+  df <- make_test_df()
+  fit <- fit_nhpp(
+    df, threshold = 4, loc_vars = "x", scale_vars = "x",
+    penalty = "lasso", lambda = "bic", lambda_scaling = "common",
+    verbose = FALSE
+  )
+  expect_equal(unname(fit$lambda), rep(unname(fit$lambda[1L]), 3L))
+  expect_identical(fit$lambda_scaling, "common")
+})
+
+test_that("fit_nhpp validates lambda scaling", {
+  df <- make_test_df()
+  expect_error(
+    fit_nhpp(df, threshold = 4, lambda_scaling = "unknown"),
+    regexp = "arg"
+  )
 })
 
 test_that(".fit_at_lambda returns a failed result when both optimizers error", {

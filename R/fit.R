@@ -18,23 +18,29 @@
 # -----------------------------------------------------------------------------
 # S3 constructor - internal
 # -----------------------------------------------------------------------------
-new_nhpp_fit <- function(par, dm, threshold, nllh_pen, nllh_raw,
+new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
+                         nllh_oper,
                          lambda, alpha, penalty, penalize_shape,
-                         hessian, fitted, obs_per_year, active_tol,
+                         lambda_scaling, hessian, fitted, fitted_oper,
+                         obs_per_year, active_tol,
                          converged, n_exc) {
   structure(
     list(
       par            = par,
+      par_oper       = par_oper,
       dm             = dm,
       threshold      = threshold,
       nllh_pen       = nllh_pen,
       nllh_raw       = nllh_raw,
+      nllh_oper      = nllh_oper,
       lambda         = lambda,
       alpha          = alpha,
       penalty        = penalty,
       penalize_shape = penalize_shape,
+      lambda_scaling = lambda_scaling,
       hessian        = hessian,
       fitted         = fitted,
+      fitted_oper    = fitted_oper,
       obs_per_year   = obs_per_year,
       active_tol     = active_tol,
       converged      = converged,
@@ -186,6 +192,10 @@ new_nhpp_fit <- function(par, dm, threshold, nllh_pen, nllh_raw,
 #' @param active_tol Positive numeric tolerance used for BIC complexity
 #'   counting, active-covariate extraction, and default coefficient reporting.
 #'   Default \code{1e-2}.
+#' @param lambda_scaling Character. Scaling used when \code{lambda = "bic"}:
+#'   \code{"gradient"} calibrates the scale and shape penalties relative to
+#'   the location-block score magnitude; \code{"common"} applies the same
+#'   scalar lambda to all parameter blocks. Ignored for numeric \code{lambda}.
 #' @param maxit Integer. Maximum optimizer iterations. Default \code{10000L}.
 #' @param calc_hessian Logical. Compute Hessian at solution? Needed for
 #'   delta-method standard errors. Default \code{FALSE}.
@@ -206,6 +216,7 @@ fit_nhpp <- function(df, threshold,
                      penalize_shape = TRUE,
                      obs_per_year   = 365.25,
                      active_tol     = 1e-2,
+                     lambda_scaling = c("gradient", "common"),
                      maxit          = 10000L,
                      calc_hessian   = FALSE,
                      verbose        = TRUE) {
@@ -236,6 +247,7 @@ fit_nhpp <- function(df, threshold,
     stop("fit_nhpp: `verbose` must be TRUE or FALSE.")
 
   penalty <- match.arg(penalty)
+  lambda_scaling <- match.arg(lambda_scaling)
 
   y     <- df$y
   if (!is.numeric(y) || any(!is.finite(y)))
@@ -316,6 +328,7 @@ fit_nhpp <- function(df, threshold,
       init           = init,
       obs_per_year   = obs_per_year,
       active_tol     = active_tol,
+      lambda_scaling = lambda_scaling,
       maxit          = maxit,
       verbose        = verbose
     )
@@ -342,6 +355,19 @@ fit_nhpp <- function(df, threshold,
   par_hat <- res$par
   names(par_hat) <- names(init)
 
+  pen_idx_all <- c(
+    dm$idx_pen_mu,
+    p_mu + dm$idx_pen_sigma,
+    if (penalize_shape) p_mu + p_sig + dm$idx_pen_xi else integer(0L)
+  )
+  par_oper <- par_hat
+  small <- pen_idx_all[abs(par_oper[pen_idx_all]) < active_tol]
+  if (length(small) > 0L) par_oper[small] <- 0
+  nllh_oper <- pp_nllh(par_oper, dm, y, threshold,
+                       lambda = 0, alpha = alpha,
+                       pen_xi = penalize_shape,
+                       obs_per_year = obs_per_year)
+
   beta_mu    <- par_hat[seq_len(p_mu)]
   beta_sigma <- par_hat[p_mu + seq_len(p_sig)]
   beta_xi    <- par_hat[p_mu + p_sig + seq_len(p_xi)]
@@ -351,19 +377,31 @@ fit_nhpp <- function(df, threshold,
     sigma = exp(as.numeric(dm$X_sigma %*% beta_sigma)),
     xi    = as.numeric(dm$X_xi    %*% beta_xi)
   )
+  beta_mu_oper    <- par_oper[seq_len(p_mu)]
+  beta_sigma_oper <- par_oper[p_mu + seq_len(p_sig)]
+  beta_xi_oper    <- par_oper[p_mu + p_sig + seq_len(p_xi)]
+  fitted_oper <- list(
+    mu    = as.numeric(dm$X_mu    %*% beta_mu_oper),
+    sigma = exp(as.numeric(dm$X_sigma %*% beta_sigma_oper)),
+    xi    = as.numeric(dm$X_xi    %*% beta_xi_oper)
+  )
 
   new_nhpp_fit(
     par            = par_hat,
+    par_oper       = par_oper,
     dm             = dm,
     threshold      = threshold,
     nllh_pen       = res$nllh_pen,
     nllh_raw       = res$nllh_raw,
+    nllh_oper      = nllh_oper,
     lambda         = lambda_resolved,
     alpha          = alpha,
     penalty        = penalty,
     penalize_shape = penalize_shape,
+    lambda_scaling = lambda_scaling,
     hessian        = res$hessian,
     fitted         = fitted,
+    fitted_oper    = fitted_oper,
     obs_per_year   = obs_per_year,
     active_tol     = active_tol,
     converged      = res$converged,
@@ -395,6 +433,7 @@ print.nhpp_fit <- function(x, ...) {
 }
 
 #' @export
-coef.nhpp_fit <- function(object, ...) {
-  object$par
+coef.nhpp_fit <- function(object, operational = FALSE, ...) {
+  if (isTRUE(operational) && !is.null(object$par_oper)) object$par_oper else
+    object$par
 }

@@ -4,7 +4,7 @@
 \alias{predict_params}
 \title{Compute time-varying GEV parameters from a fitted model}
 \usage{
-predict_params(fit, newdata = NULL)
+predict_params(fit, newdata = NULL, operational = TRUE)
 }
 \arguments{
 \item{fit}{An object of class \code{nhpp_fit}.}
@@ -12,6 +12,10 @@ predict_params(fit, newdata = NULL)
 \item{newdata}{A data frame with one row per time point. Must contain all
 columns that appear in the model's design matrices (except the intercept).
 If \code{NULL}, returns the fitted values stored in \code{fit$fitted}.}
+
+\item{operational}{Logical. If \code{TRUE} (default), coefficients below
+the fitted activity tolerance are set to zero before prediction. Set to
+\code{FALSE} to use the unthresholded smooth optimizer solution.}
 }
 \value{
 A list with three numeric vectors of length \code{nrow(newdata)}:

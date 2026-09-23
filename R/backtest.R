@@ -48,6 +48,8 @@
 #' @param year_col Character. Name of the year column. Default \code{"year"}.
 #' @param min_obs_year Integer. Minimum observations in a validation year
 #'   for it to be included. Default \code{as.integer(n_obs * 0.8)}.
+#' @param seed Integer. Seed used for empirical annual-block sampling.
+#'   Default \code{2024L}. Each validation window uses a distinct derived seed.
 #' @param verbose Logical. Print progress. Default \code{TRUE}.
 #'
 #' @return A list with three elements:
@@ -73,6 +75,7 @@ backtest <- function(fit, data, varname,
                      interactions    = list(),
                      year_col        = "year",
                      min_obs_year    = NULL,
+                     seed            = 2024L,
                      verbose         = TRUE) {
 
   if (!inherits(fit, "nhpp_fit"))
@@ -88,6 +91,8 @@ backtest <- function(fit, data, varname,
   if (!is.numeric(TRs) || length(TRs) < 1L ||
       any(!is.finite(TRs)) || any(TRs <= 1))
     stop("backtest: `TRs` must contain finite return periods greater than 1.")
+  if (!is.numeric(seed) || length(seed) != 1L || !is.finite(seed))
+    stop("backtest: `seed` must be a single finite numeric value.")
 
   inherited_obs <- if (is.null(fit$obs_per_year)) 365.25 else fit$obs_per_year
   n_obs        <- if (is.null(n_obs)) as.integer(round(inherited_obs)) else
@@ -115,7 +120,18 @@ backtest <- function(fit, data, varname,
   max_year   <- max(all_years)
   thr        <- fit$threshold
   ac         <- active_covariates(fit)
-  ac_in_data <- if (!is.null(ac)) ac[ac %in% names(data)] else character(0L)
+  interaction_outputs <- names(interactions)
+  relevant_interactions <- if (is.null(ac)) list() else
+    interactions[interaction_outputs %in% ac]
+  interaction_inputs <- unique(unlist(relevant_interactions,
+                                      use.names = FALSE))
+  direct_active <- if (is.null(ac)) character(0L) else
+    setdiff(ac, interaction_outputs)
+  ac_in_data <- unique(c(direct_active, interaction_inputs))
+  missing_covariates <- setdiff(ac_in_data, names(data))
+  if (length(missing_covariates) > 0L)
+    stop("backtest: required covariates not found in data: ",
+         paste(missing_covariates, collapse = ", "))
 
   first_val <- min_year + min_train_years
   if (first_val > max_year)
@@ -162,7 +178,8 @@ backtest <- function(fit, data, varname,
       n_obs        = n_obs,
       interactions = interactions,
       year_col     = year_col,
-      period       = period
+      period       = period,
+      seed         = as.integer(seed) + j - 1L
     )
     if (length(cov_w) == 0L) {
       if (verbose) message("  -> No valid covariate blocks, skipping window.")
@@ -189,8 +206,9 @@ backtest <- function(fit, data, varname,
         F_yr <- NA_real_
       } else {
         # PIT: P(annual max <= M_yr) under the training model
-        F_yr <- mean(vapply(cov_w, function(cm)
-          .f_annual_one(M_yr, fit_w, cm), numeric(1L)), na.rm = TRUE)
+        F_vals <- vapply(cov_w, function(cm)
+          .f_annual_one(M_yr, fit_w, cm), numeric(1L))
+        F_yr <- if (all(is.finite(F_vals))) mean(F_vals) else NA_real_
       }
 
       superou <- stats::setNames(
@@ -262,7 +280,11 @@ backtest <- function(fit, data, varname,
   df_ev  <- df_results[df_results$has_event & !is.na(df_results$F_ann), ]
   ks_res <- NULL
   if (nrow(df_ev) >= 5L) {
-    ks    <- stats::ks.test(jitter(df_ev$F_ann, factor = 1e-6), "punif")
+    pit_jittered <- .with_preserved_seed(
+      as.integer(seed) + 100000L,
+      jitter(df_ev$F_ann, factor = 1e-6)
+    )
+    ks <- stats::ks.test(pit_jittered, "punif")
     ks_res <- data.frame(
       n           = nrow(df_ev),
       D_statistic = round(as.numeric(ks$statistic), 4L),
@@ -294,7 +316,7 @@ backtest <- function(fit, data, varname,
 # Sample n_boot years of covariates from training years.
 .build_cov_bootstrap <- function(fit_w, data, train_yrs, ac_in_data,
                                  n_boot, n_obs, interactions, year_col,
-                                 period = NULL) {
+                                 period = NULL, seed = 2024L) {
 
   if (length(ac_in_data) == 0L) {
     return(lapply(seq_len(n_boot), function(i)
@@ -320,20 +342,22 @@ backtest <- function(fit, data, varname,
   anos_disp <- unique(df_cov[[year_col]][!is.na(df_cov[[year_col]])])
   if (length(anos_disp) == 0L) return(list())
 
-  cov_list <- lapply(seq_len(n_boot), function(i) {
-    yr    <- sample(anos_disp, 1L)
-    df_yr <- df_cov[df_cov[[year_col]] == yr, ac_in_data, drop = FALSE]
-    df_yr <- df_yr[stats::complete.cases(df_yr), , drop = FALSE]
-    df_yr <- utils::head(df_yr, n_obs)
-    if (nrow(df_yr) < as.integer(n_obs * 0.9)) return(NULL)
-    if (nrow(df_yr) < n_obs) {
-      falta <- n_obs - nrow(df_yr)
-      df_yr <- rbind(df_yr,
-                     df_yr[rep(nrow(df_yr), falta), , drop = FALSE])
-    }
-    build_cov_annual(fit_w, as.list(df_yr),
-                     n_obs = n_obs, period = period,
-                     interactions = interactions)
+  cov_list <- .with_preserved_seed(seed, {
+    lapply(seq_len(n_boot), function(i) {
+      yr    <- sample(anos_disp, 1L)
+      df_yr <- df_cov[df_cov[[year_col]] == yr, ac_in_data, drop = FALSE]
+      df_yr <- df_yr[stats::complete.cases(df_yr), , drop = FALSE]
+      df_yr <- utils::head(df_yr, n_obs)
+      if (nrow(df_yr) < as.integer(n_obs * 0.9)) return(NULL)
+      if (nrow(df_yr) < n_obs) {
+        falta <- n_obs - nrow(df_yr)
+        df_yr <- rbind(df_yr,
+                       df_yr[rep(nrow(df_yr), falta), , drop = FALSE])
+      }
+      build_cov_annual(fit_w, as.list(df_yr),
+                       n_obs = n_obs, period = period,
+                       interactions = interactions)
+    })
   })
   Filter(Negate(is.null), cov_list)
 }
@@ -345,8 +369,8 @@ backtest <- function(fit, data, varname,
   mu_t    <- params$mu
   sigma_t <- params$sigma
   xi_t    <- params$xi
-  lam_vec <- .tail_measure_at_level(z, mu_t, sigma_t, xi_t)
-  exp(-mean(lam_vec, na.rm = TRUE))
+  .annual_exceedance_prob(z, mu_t, sigma_t, xi_t,
+                          n_obs = length(mu_t))
 }
 
 # .compute_rl_from_cov_list()

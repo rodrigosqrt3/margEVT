@@ -4,7 +4,14 @@
 \alias{simulate_covariates}
 \title{Simulate stationary covariate trajectories from a VAR generator}
 \usage{
-simulate_covariates(generator, n_mc, n_obs = NULL, burn_in = 300L, seed = NULL)
+simulate_covariates(
+  generator,
+  n_mc,
+  n_obs = NULL,
+  burn_in = 300L,
+  initialization = c("stationary", "burnin"),
+  seed = NULL
+)
 }
 \arguments{
 \item{generator}{Object from \code{\link{fit_var_generator}}. If
@@ -15,9 +22,12 @@ simulate_covariates(generator, n_mc, n_obs = NULL, burn_in = 300L, seed = NULL)
 \item{n_obs}{Integer observations per simulated year. If \code{NULL},
 uses the rounded seasonal period stored in \code{generator}.}
 
-\item{burn_in}{Integer. Burn-in applied separately to each trajectory to
-reduce transient VAR dynamics. Default \code{300L}; adequacy should be
-assessed for highly persistent fitted systems.}
+\item{burn_in}{Integer. Burn-in applied separately when
+\code{initialization = "burnin"}. Default \code{300L}.}
+
+\item{initialization}{Character. \code{"stationary"} (default) draws the
+initial companion state from the fitted stationary Gaussian law;
+\code{"burnin"} starts at zero and applies \code{burn_in} transitions.}
 
 \item{seed}{Integer. Random seed. Default \code{NULL} (not set).}
 }

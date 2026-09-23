@@ -17,6 +17,9 @@
 #' @param newdata A data frame with one row per time point. Must contain all
 #'   columns that appear in the model's design matrices (except the intercept).
 #'   If \code{NULL}, returns the fitted values stored in \code{fit$fitted}.
+#' @param operational Logical. If \code{TRUE} (default), coefficients below
+#'   the fitted activity tolerance are set to zero before prediction. Set to
+#'   \code{FALSE} to use the unthresholded smooth optimizer solution.
 #'
 #' @return A list with three numeric vectors of length \code{nrow(newdata)}:
 #'   \item{mu}{Location parameter.}
@@ -24,13 +27,18 @@
 #'   \item{xi}{Shape parameter.}
 #'
 #' @export
-predict_params <- function(fit, newdata = NULL) {
+predict_params <- function(fit, newdata = NULL, operational = TRUE) {
 
   if (!inherits(fit, "nhpp_fit"))
     stop("predict_params: `fit` must be an nhpp_fit object.")
 
+  if (!is.logical(operational) || length(operational) != 1L ||
+      is.na(operational))
+    stop("predict_params: `operational` must be TRUE or FALSE.")
+
   # Return stored fitted values for in-sample case
   if (is.null(newdata)) {
+    if (operational && !is.null(fit$fitted_oper)) return(fit$fitted_oper)
     return(fit$fitted)
   }
 
@@ -38,7 +46,13 @@ predict_params <- function(fit, newdata = NULL) {
     stop("predict_params: `newdata` must be a data frame.")
 
   dm  <- fit$dm
-  par <- fit$par
+  par <- if (operational && !is.null(fit$par_oper)) fit$par_oper else fit$par
+  if (operational && is.null(fit$par_oper)) {
+    tol <- if (is.null(fit$active_tol)) 1e-2 else fit$active_tol
+    pen_idx <- .penalized_parameter_indices(fit)
+    if (length(pen_idx) > 0L)
+      par[pen_idx[abs(par[pen_idx]) < tol]] <- 0
+  }
 
   p_mu  <- ncol(dm$X_mu)
   p_sig <- ncol(dm$X_sigma)
@@ -85,6 +99,17 @@ predict_params <- function(fit, newdata = NULL) {
       paste(missing_c, collapse = ", ")
     ))
 
-  rhs <- paste(cn_data, collapse = " + ")
-  stats::model.matrix(stats::as.formula(paste("~", rhs)), data = newdata)
+  non_numeric <- cn_data[!vapply(newdata[, cn_data, drop = FALSE],
+                                 is.numeric, logical(1L))]
+  if (length(non_numeric) > 0L)
+    stop(sprintf(
+      "predict_params: required columns must be numeric: %s",
+      paste(non_numeric, collapse = ", ")
+    ))
+  if (any(!is.finite(as.matrix(newdata[, cn_data, drop = FALSE]))))
+    stop("predict_params: required columns must contain only finite values.")
+
+  X <- as.matrix(cbind("(Intercept)" = 1, newdata[, cn_data, drop = FALSE]))
+  storage.mode(X) <- "double"
+  X
 }

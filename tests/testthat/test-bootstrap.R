@@ -71,7 +71,7 @@ test_that("bootstrap_coef estimates match fit$par", {
   s   <- make_boot_fit()
   res <- bootstrap_coef(s$fit, s$df, R = 10L, verbose = FALSE)
   expect_equal(res$estimate,
-               unname(round(s$fit$par[res$parameter], 5L)))
+               unname(round(s$fit$par_oper[res$parameter], 5L)))
 })
 
 test_that("bootstrap refits preserve the original design and free variables", {
@@ -155,6 +155,7 @@ test_that("bootstrap catches invalid GPD scale limit", {
   s$fit$fitted$mu    <- rep(0.0, nrow(s$df))
   s$fit$fitted$sigma <- rep(exp(-50.0), nrow(s$df))
   s$fit$fitted$xi    <- rep(-10.0, nrow(s$df))
+  s$fit$fitted_oper <- s$fit$fitted
 
   expect_error(
     bootstrap_coef(s$fit, s$df, R = 2, verbose = FALSE),

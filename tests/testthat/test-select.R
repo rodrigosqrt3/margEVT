@@ -128,18 +128,25 @@ test_that("bic selection stops early when valley is found (Mocked via testthat 3
   counter <- 0
   mock_fit <- function(...) {
     counter <<- counter + 1
-    nllh <- 100 + counter * 40
 
     list(
       converged = TRUE,
-      par = rep(1, length(init)),
-      nllh_pen = nllh,
-      nllh_raw = nllh,
+      # Encode the path position in the fitted vector. Since selection now
+      # recomputes the unpenalized likelihood at the thresholded operational
+      # estimator, the likelihood mock below reads this value.
+      par = rep(counter, length(init)),
+      nllh_pen = 0,
+      nllh_raw = 0,
       hessian = NULL
     )
   }
 
-  testthat::local_mocked_bindings(.fit_at_lambda = mock_fit)
+  mock_nllh <- function(par, ...) 100 + unname(par[1]) * 40
+
+  testthat::local_mocked_bindings(
+    .fit_at_lambda = mock_fit,
+    pp_nllh = mock_nllh
+  )
 
   expect_message(
     fit <- margEVT:::.select_lambda_bic(
