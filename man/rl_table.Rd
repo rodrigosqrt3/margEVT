@@ -16,3 +16,12 @@ A wide data frame.
 Converts the long-format output of \code{\link{marginalize}} into a
 wide table with one row per scenario and one column per return period.
 }
+\examples{
+set.seed(1)
+df <- data.frame(y = c(rexp(300), runif(30, 5, 10)),
+                 year = rep(1991:2020, each = 11))
+fit <- fit_nhpp(df, threshold = 4, penalty = "none", obs_per_year = 11,
+                verbose = FALSE)
+rl_table(marginalize(fit, df, TRs = c(10, 50), approaches = "A"))
+
+}

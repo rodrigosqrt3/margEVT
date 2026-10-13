@@ -20,6 +20,14 @@
 #'   \item{idx_pen_sigma}{Integer indices of penalized columns in X_sigma.}
 #'   \item{idx_pen_xi}{Integer indices of penalized columns in X_xi.}
 #'
+#' @examples
+#' df <- cbind(data.frame(y = rexp(10), x = rnorm(10)),
+#'             seasonal_harmonics(1:10))
+#' dm <- build_design_matrices(df, loc_vars = c("x", "cos1", "sen1"),
+#'                             scale_vars = "x", free_vars = c("cos1", "sen1"))
+#' colnames(dm$X_mu)
+#' dm$idx_pen_mu
+#'
 #' @export
 build_design_matrices <- function(df, loc_vars = NULL, scale_vars = NULL,
                                   shape_vars = NULL, free_vars = NULL) {

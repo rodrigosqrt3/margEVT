@@ -36,3 +36,12 @@ A list with elements:
 \description{
 Build design matrices for the NHPP point process model
 }
+\examples{
+df <- cbind(data.frame(y = rexp(10), x = rnorm(10)),
+            seasonal_harmonics(1:10))
+dm <- build_design_matrices(df, loc_vars = c("x", "cos1", "sen1"),
+                            scale_vars = "x", free_vars = c("cos1", "sen1"))
+colnames(dm$X_mu)
+dm$idx_pen_mu
+
+}

@@ -37,8 +37,21 @@ A data frame with \code{n_obs} rows and all columns required
 }
 \description{
 Constructs a data frame with \code{n_obs} rows containing all columns
-required by a fitted \code{nhpp_fit} model. Seasonality columns
-(\code{cos1}, \code{sen1}, \code{cos2}, \code{sen2}) are computed
-automatically using \code{period}. Any other required column is filled
-from \code{cov_vals}, or set to zero with a warning if absent.
+required by a fitted \code{nhpp_fit} model. The default seasonal columns
+(\code{cos1}, \code{sen1}, \code{cos2}, \code{sen2}) and any other
+harmonic column required by the model (\code{cos<k>}, \code{sin<k>},
+\code{sen<k>}) are computed automatically with \code{period} (see
+\code{\link{seasonal_harmonics}}). Any other required column is filled from
+\code{cov_vals}, or set to zero with a warning if absent.
+}
+\examples{
+set.seed(1)
+n <- 3650
+df <- cbind(data.frame(x = rnorm(n)), seasonal_harmonics(rep(1:365, 10)))
+df$y <- 10 + df$x + 3 * df$cos1 + rexp(n, 1 / 3)
+fit <- fit_nhpp(df, threshold = 20, loc_vars = c("x", "cos1", "sen1"),
+                free_vars = c("cos1", "sen1"), penalty = "none",
+                verbose = FALSE)
+head(build_cov_annual(fit, list(x = 0.5), n_obs = 365))
+
 }

@@ -27,3 +27,12 @@ A list with three numeric vectors of length \code{nrow(newdata)}:
 Given an \code{nhpp_fit} object and a data frame of covariate values,
 returns the implied location, scale, and shape parameters at each row.
 }
+\examples{
+set.seed(1)
+df <- data.frame(x = rnorm(2000))
+df$y <- 10 + 2 * df$x + rexp(2000, 1 / 3)
+fit <- fit_nhpp(df, threshold = 18, loc_vars = "x", penalty = "none",
+                verbose = FALSE)
+predict_params(fit, data.frame(x = c(-1, 0, 1)))
+
+}

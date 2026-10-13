@@ -33,7 +33,7 @@ test_that("preserved seed removes a temporary global seed", {
 
 test_that("summary.nhpp_fit runs without error", {
   fit <- make_utils_fit()
-  expect_output(summary(fit), regexp = "nhpp_fit summary")
+  expect_output(print(summary(fit)), regexp = "nhpp_fit summary")
 })
 
 test_that("summary.nhpp_fit validates its activity tolerance", {
@@ -43,14 +43,14 @@ test_that("summary.nhpp_fit validates its activity tolerance", {
 
 test_that("summary.nhpp_fit shows threshold", {
   fit <- make_utils_fit()
-  expect_output(summary(fit), regexp = "Threshold")
+  expect_output(print(summary(fit)), regexp = "Threshold")
 })
 
 test_that("summary.nhpp_fit inherits the fitted activity tolerance", {
   fit <- make_utils_fit()
   fit$active_tol <- 1e-2
   fit$par["mu.x"] <- 5e-3
-  expect_output(summary(fit), regexp = "Shrunk to zero : mu.x")
+  expect_output(print(summary(fit)), regexp = "Shrunk to zero : mu.x")
 })
 
 test_that("summary.nhpp_fit handles Hessian diagnostic branches (Mocked)", {
@@ -65,18 +65,18 @@ test_that("summary.nhpp_fit handles Hessian diagnostic branches (Mocked)", {
   # A. Test: Shrunk parameters printing & Hessian positive-definite
   fit_ok <- base_mock
   fit_ok$hessian <- matrix(c(2, 0, 0, 2), nrow = 2) # positive definite
-  expect_output(summary(fit_ok), regexp = "Hessian positive definite")
-  expect_output(summary(fit_ok), regexp = "Shrunk to zero : b")
+  expect_output(print(summary(fit_ok)), regexp = "Hessian positive definite")
+  expect_output(print(summary(fit_ok)), regexp = "Shrunk to zero : b")
 
   # B. Test: Hessian not positive-definite
   fit_npd <- base_mock
   fit_npd$hessian <- matrix(c(-1, 0, 0, 2), nrow = 2) # has negative eigenvalue
-  expect_output(summary(fit_npd), regexp = "Hessian not positive definite")
+  expect_output(print(summary(fit_npd)), regexp = "Hessian not positive definite")
 
   # C. Test: Hessian ill-conditioned
   fit_ill <- base_mock
   fit_ill$hessian <- matrix(c(1e9, 0, 0, 1e-3), nrow = 2) # extremely high condition number
-  expect_output(summary(fit_ill), regexp = "Hessian ill-conditioned")
+  expect_output(print(summary(fit_ill)), regexp = "Hessian ill-conditioned")
 })
 
 # -----------------------------------------------------------------------------

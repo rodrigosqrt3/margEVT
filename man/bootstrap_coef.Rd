@@ -4,7 +4,15 @@
 \alias{bootstrap_coef}
 \title{Parametric bootstrap confidence intervals for model coefficients}
 \usage{
-bootstrap_coef(fit, data, R = 200L, level = 0.95, seed = 42L, verbose = TRUE)
+bootstrap_coef(
+  fit,
+  data,
+  R = 200L,
+  level = 0.95,
+  seed = 42L,
+  cores = 1L,
+  verbose = TRUE
+)
 }
 \arguments{
 \item{fit}{An \code{nhpp_fit} object.}
@@ -16,16 +24,37 @@ bootstrap_coef(fit, data, R = 200L, level = 0.95, seed = 42L, verbose = TRUE)
 
 \item{level}{Numeric. Confidence level. Default \code{0.95}.}
 
-\item{seed}{Integer. Random seed. Default \code{42L}.}
+\item{seed}{Seed of the replicate streams, or \code{NULL} to derive it
+from the current random-number state. Default \code{42L}.}
+
+\item{cores}{Positive integer number of worker processes. Default \code{1L}.}
 
 \item{verbose}{Logical. Print progress. Default \code{TRUE}.}
 }
 \value{
 A data frame with columns \code{parameter}, \code{estimate},
   \code{CI_low}, \code{CI_high}, \code{n_ok}, with one row for every
-  coefficient in the fitted model.
+  coefficient in the fitted model. Intervals require at least five
+  successful replicates. The replicate matrix is attached as attribute
+  \code{"replicates"}.
 }
 \description{
-Simulates \code{R} bootstrap samples, refits at the original penalty and
-lambda, and returns empirical quantile CIs for each coefficient.
+Simulates \code{R} bootstrap samples, refits at the original penalty,
+lambda, and penalty weights, and returns empirical percentile intervals
+for each operational coefficient. See \code{\link{bootstrap_rl}} for the
+resampling scheme and the random-number streams.
+}
+\examples{
+set.seed(1)
+df <- data.frame(x = rnorm(1500))
+df$y <- 10 + df$x + rexp(1500, 1 / 3)
+fit <- fit_nhpp(df, threshold = 18, loc_vars = "x", penalty = "none",
+                verbose = FALSE)
+\donttest{
+bootstrap_coef(fit, df, R = 50, verbose = FALSE)
+}
+
+}
+\seealso{
+\code{\link{bootstrap_rl}}
 }

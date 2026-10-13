@@ -1,8 +1,10 @@
 # =============================================================================
 # utils.R
-# Small shared utilities.
+# Small shared utilities and lightweight exported helpers.
 # =============================================================================
 
+# Runs `code` with a fixed seed and restores the caller's random-number state
+# afterwards (or removes the seed if none existed).
 .with_preserved_seed <- function(seed, code) {
   had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
   if (had_seed)
@@ -18,6 +20,85 @@
 
   set.seed(seed)
   force(code)
+}
+
+# Seeded evaluation when `seed` is supplied; otherwise uses the current stream.
+.maybe_seeded <- function(seed, code) {
+  if (is.null(seed)) return(force(code))
+  .with_preserved_seed(seed, code)
+}
+
+# Saves the caller's RNG kind and state; the returned function restores them.
+.rng_snapshot <- function() {
+  kind <- RNGkind()
+  had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  old_seed <- if (had_seed)
+    get(".Random.seed", envir = .GlobalEnv, inherits = FALSE) else NULL
+  function() {
+    suppressWarnings(RNGkind(kind[1L], kind[2L], kind[3L]))
+    if (had_seed) {
+      assign(".Random.seed", old_seed, envir = .GlobalEnv)
+    } else {
+      rm(".Random.seed", envir = .GlobalEnv)
+    }
+  }
+}
+
+# `n` independent L'Ecuyer-CMRG streams (parallel::nextRNGStream). Replicate
+# b always uses stream b, so results do not depend on how replicates are
+# distributed over cores. With seed = NULL the base seed is drawn from the
+# caller's stream, which therefore advances by one draw.
+.rng_streams <- function(n, seed = NULL) {
+  if (is.null(seed)) seed <- sample.int(.Machine$integer.max, 1L)
+  restore <- .rng_snapshot()
+  on.exit(restore(), add = TRUE)
+  RNGkind("L'Ecuyer-CMRG")
+  set.seed(seed)
+  s <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  out <- vector("list", n)
+  for (i in seq_len(n)) {
+    out[[i]] <- s
+    s <- parallel::nextRNGStream(s)
+  }
+  out
+}
+
+# Evaluates `code` on a given RNG stream and restores the caller's RNG.
+.with_rng_stream <- function(stream, code) {
+  restore <- .rng_snapshot()
+  on.exit(restore(), add = TRUE)
+  assign(".Random.seed", stream, envir = .GlobalEnv)
+  force(code)
+}
+
+.validate_seed <- function(seed, fun) {
+  if (!is.null(seed) &&
+      (!is.numeric(seed) || length(seed) != 1L || !is.finite(seed)))
+    stop(sprintf("%s: `seed` must be NULL or a single finite number.", fun))
+  invisible(seed)
+}
+
+.validate_cores <- function(cores, fun) {
+  if (!is.numeric(cores) || length(cores) != 1L || !is.finite(cores) ||
+      cores < 1)
+    stop(sprintf("%s: `cores` must be a positive integer.", fun))
+  as.integer(cores)
+}
+
+# lapply() that optionally distributes work over a PSOCK cluster. The worker
+# function must be deterministic given its input, so results do not depend on
+# the number of cores. Workers receive the caller's library paths, which lets
+# them load margEVT from non-default libraries.
+.par_lapply <- function(X, FUN, cores = 1L) {
+  if (cores <= 1L || length(X) <= 1L) return(lapply(X, FUN))
+  cl <- parallel::makeCluster(min(cores, length(X)))
+  on.exit(parallel::stopCluster(cl), add = TRUE)
+  # The setter must not be enclosed by the margEVT namespace: unserializing
+  # such a closure would load margEVT on the worker before the paths are set.
+  set_paths <- function(paths) .libPaths(paths)
+  environment(set_paths) <- globalenv()
+  parallel::clusterCall(cl, set_paths, .libPaths())
+  parallel::parLapply(cl, X, FUN)
 }
 
 .penalized_parameter_indices <- function(fit) {
@@ -42,77 +123,28 @@
   keep
 }
 
-#' Summarise a fitted nhpp_fit model
-#'
-#' Prints a structured summary of a fitted \code{nhpp_fit} object, including
-#' the penalty used, active coefficients, and basic model diagnostics.
-#'
-#' @param object An \code{nhpp_fit} object.
-#' @param tol Numeric. Coefficients smaller than this in absolute value are
-#'   treated as zero. If \code{NULL}, inherits \code{object$active_tol};
-#'   legacy objects fall back to \code{1e-2}.
-#' @param ... Ignored.
-#'
-#' @return Invisibly returns the input \code{nhpp_fit} object.
-#'
-#' @export
-summary.nhpp_fit <- function(object, tol = NULL, ...) {
-  cat("-- nhpp_fit summary --------------------------------------\n")
-  cat(sprintf("  Threshold      : %.4g\n",  object$threshold))
-  cat(sprintf("  Penalty        : %s\n",    object$penalty))
-  cat(sprintf("  Lambda (mean)  : %.5g\n",  mean(object$lambda)))
-  cat(sprintf("  Alpha          : %.3g\n",  mean(object$alpha)))
-  cat(sprintf("  Penalize shape : %s\n",    object$penalize_shape))
-  cat(sprintf("  obs/year       : %.2f\n",  object$obs_per_year))
-  cat(sprintf("  Converged      : %s\n",    object$converged))
-  cat(sprintf("  nllh (raw)     : %.4f\n",  object$nllh_raw))
-  cat(sprintf("  nllh (pen)     : %.4f\n",  object$nllh_pen))
-
+.fit_tol <- function(fit, tol, fun) {
   tol <- if (is.null(tol)) {
-    if (is.null(object$active_tol)) 1e-2 else object$active_tol
+    if (is.null(fit$active_tol)) 1e-2 else fit$active_tol
   } else tol
   if (!is.numeric(tol) || length(tol) != 1L || !is.finite(tol) || tol <= 0)
-    stop("summary.nhpp_fit: `tol` must be a single positive numeric value.")
-
-  par      <- object$par
-  keep     <- .active_parameter_mask(object, tol)
-  active   <- par[keep]
-  inactive <- par[!keep]
-
-  cat(sprintf("\n  Active coefficients (%d of %d):\n",
-              length(active), length(par)))
-  if (length(active) > 0L) {
-    df_act <- data.frame(
-      Estimate = round(active, 5L),
-      row.names = names(active)
-    )
-    print(df_act)
-  }
-
-  if (length(inactive) > 0L)
-    cat(sprintf("\n  Shrunk to zero : %s\n",
-                paste(names(inactive), collapse = ", ")))
-
-  if (!is.null(object$hessian)) {
-    eigs    <- eigen(object$hessian, symmetric = TRUE,
-                     only.values = TRUE)$values
-    min_eig <- min(eigs)
-    cond    <- max(eigs) / max(min_eig, 1e-300)
-    cat(sprintf("\n  Hessian: min eigenvalue = %.3g | condition = %.2e\n",
-                min_eig, cond))
-    if (any(eigs < 0))
-      cat("  [!] Hessian not positive definite - SEs unreliable.\n")
-    else if (cond > 1e8)
-      cat("  [!] Hessian ill-conditioned - parameters may not be identifiable.\n")
-    else
-      cat("  [ok] Hessian positive definite.\n")
-  }
-
-  invisible(object)
+    stop(sprintf("%s: `tol` must be a single positive numeric value.", fun))
+  tol
 }
+
+# Names of the seasonal harmonic columns recognised by margEVT: cos<k>,
+# sin<k> and the legacy spelling sen<k>, for integer k >= 1.
+.harmonic_pattern <- "^(cos|sin|sen)[1-9][0-9]*$"
+
+.is_harmonic <- function(x) grepl(.harmonic_pattern, x)
 
 
 #' Compute BIC for a fitted nhpp_fit model
+#'
+#' Computes \eqn{-2\ell + k \log m}, where \eqn{\ell} is the unpenalized
+#' log-likelihood at the operational estimator, \eqn{k} the number of active
+#' parameters, and \eqn{m} the number of exceedances. Equivalent to
+#' \code{BIC(fit)} for fits produced by \code{margEVT} 0.4.0 or later.
 #'
 #' @param fit An \code{nhpp_fit} object.
 #' @param tol Numeric. Coefficients smaller than this are counted as zero
@@ -121,6 +153,13 @@ summary.nhpp_fit <- function(object, tol = NULL, ...) {
 #'
 #' @return Numeric scalar. BIC value.
 #'
+#' @examples
+#' set.seed(1)
+#' df <- data.frame(y = c(rexp(300), runif(30, 5, 10)), x = rnorm(330))
+#' fit <- fit_nhpp(df, threshold = 4, loc_vars = "x", penalty = "none",
+#'                 verbose = FALSE)
+#' bic_nhpp(fit)
+#'
 #' @export
 bic_nhpp <- function(fit, tol = NULL) {
   if (!inherits(fit, "nhpp_fit"))
@@ -128,12 +167,7 @@ bic_nhpp <- function(fit, tol = NULL) {
   nllh_bic <- if (!is.null(fit$nllh_oper)) fit$nllh_oper else fit$nllh_raw
   if (!is.finite(nllh_bic))
     return(NA_real_)
-  tol <- if (is.null(tol)) {
-    if (is.null(fit$active_tol)) 1e-2 else fit$active_tol
-  } else tol
-  if (!is.numeric(tol) || length(tol) != 1L || !is.finite(tol) || tol <= 0)
-    stop("bic_nhpp: `tol` must be a single positive numeric value.")
-
+  tol <- .fit_tol(fit, tol, "bic_nhpp")
   k_active <- sum(.active_parameter_mask(fit, tol))
   2 * nllh_bic + k_active * log(fit$n_exc)
 }
@@ -143,6 +177,8 @@ bic_nhpp <- function(fit, tol = NULL) {
 #'
 #' @param x Any R object.
 #' @return Logical.
+#' @examples
+#' is_nhpp_fit(list())
 #' @export
 is_nhpp_fit <- function(x) inherits(x, "nhpp_fit")
 
@@ -150,14 +186,26 @@ is_nhpp_fit <- function(x) inherits(x, "nhpp_fit")
 #' Extract the number of exceedances from a fitted model
 #'
 #' @param fit An \code{nhpp_fit} object.
-#' @param y Numeric vector of observations used to fit the model.
+#' @param y Numeric vector of observations. If missing, the series stored in
+#'   the fitted object is used.
 #'
 #' @return Integer. Number of observations exceeding the threshold.
+#'
+#' @examples
+#' set.seed(1)
+#' df <- data.frame(y = c(rexp(300), runif(30, 5, 10)))
+#' fit <- fit_nhpp(df, threshold = 4, penalty = "none", verbose = FALSE)
+#' n_exceedances(fit)
 #'
 #' @export
 n_exceedances <- function(fit, y) {
   if (!inherits(fit, "nhpp_fit"))
     stop("n_exceedances: `fit` must be an nhpp_fit object.")
+  if (missing(y)) {
+    if (is.null(fit$y))
+      stop("n_exceedances: `y` must be supplied for fits without a stored series.")
+    y <- fit$y
+  }
   sum(y > fit$threshold, na.rm = TRUE)
 }
 
@@ -171,6 +219,14 @@ n_exceedances <- function(fit, y) {
 #'
 #' @return A wide data frame.
 #'
+#' @examples
+#' set.seed(1)
+#' df <- data.frame(y = c(rexp(300), runif(30, 5, 10)),
+#'                  year = rep(1991:2020, each = 11))
+#' fit <- fit_nhpp(df, threshold = 4, penalty = "none", obs_per_year = 11,
+#'                 verbose = FALSE)
+#' rl_table(marginalize(fit, df, TRs = c(10, 50), approaches = "A"))
+#'
 #' @export
 rl_table <- function(marg_result) {
   if (!is.data.frame(marg_result))
@@ -178,11 +234,12 @@ rl_table <- function(marg_result) {
   if (!all(c("approach", "scenario", "TR", "RL") %in% names(marg_result)))
     stop("rl_table: expected columns: approach, scenario, TR, RL.")
 
+  marg_result <- as.data.frame(marg_result)
   keys     <- unique(marg_result[, c("approach", "scenario")])
   tr_vals  <- sort(unique(marg_result$TR))
   tr_cols  <- paste0("T", tr_vals)
 
-  result <- do.call(rbind, lapply(seq_len(nrow(keys)), function(i) {
+  do.call(rbind, lapply(seq_len(nrow(keys)), function(i) {
     app <- keys$approach[i]
     sc  <- keys$scenario[i]
     sub <- marg_result[marg_result$approach == app &
@@ -192,88 +249,4 @@ rl_table <- function(marg_result) {
     for (j in seq_along(tr_cols)) row[[tr_cols[j]]] <- rl_vals[j]
     row
   }))
-
-  result
-}
-
-#' Plot diagnostics for a fitted nhpp_fit object
-#'
-#' Generates primary diagnostic plots for a fitted \code{nhpp_fit} model,
-#' including the cumulative intensity measure over time and parameter profiles.
-#'
-#' @param x An \code{nhpp_fit} object.
-#' @param type Character. Type of plot to generate: \code{"intensity"} (default)
-#'   for the cumulative intensity measure \eqn{\hat{\Lambda}(0,t)}, or
-#'   \code{"fitted"} for time-varying parameter profiles (\eqn{\mu(t)}, \eqn{\sigma(t)},
-#'   and \eqn{\xi(t)}).
-#' @param ... Additional graphical parameters passed to \code{\link[graphics]{plot}}.
-#'
-#' @return Invisibly returns \code{NULL}, called for side effects.
-#'
-#' @export
-plot.nhpp_fit <- function(x, type = c("intensity", "fitted"), ...) {
-  type <- match.arg(type)
-
-  fitted <- if (is.null(x$fitted_oper)) x$fitted else x$fitted_oper
-  mu_t  <- fitted$mu
-  sig_t <- fitted$sigma
-  xi_t  <- fitted$xi
-  u     <- x$threshold
-  n_y   <- x$obs_per_year
-
-  if (type == "intensity") {
-    z_u    <- 1 + xi_t * (u - mu_t) / sig_t
-    rate_t <- ifelse(
-      abs(xi_t) < 1e-6,
-      exp(pmax(-500, -(u - mu_t) / sig_t)),
-      ifelse(z_u <= 0, 0, exp((-1 / xi_t) * log(pmax(z_u, 1e-300))))
-    )
-
-    cum_intensity <- cumsum(rate_t) / n_y
-
-    graphics::plot(
-      cum_intensity, type = "l", col = "#2C3E50", lwd = 1.5,
-      main = "Integrated Intensity Measure Over Time",
-      xlab = "Observation Index (t)",
-      ylab = expression(hat(Lambda)(0, t)), ...
-    )
-    graphics::grid()
-
-  } else {
-    var_mu  <- length(unique(round(mu_t,  6L))) > 1L
-    var_sig <- length(unique(round(sig_t, 6L))) > 1L
-    var_xi  <- length(unique(round(xi_t,  6L))) > 1L
-
-    to_plot <- c(if (var_mu) "mu", if (var_sig) "sigma", if (var_xi) "xi")
-    if (length(to_plot) == 0L) {
-      to_plot <- c("mu", "sigma", "xi")
-    }
-
-    n_panels <- length(to_plot)
-    oldpar   <- graphics::par(mfrow = c(n_panels, 1L), mar = c(3.5, 4, 2, 1))
-    on.exit(graphics::par(oldpar))
-
-    if ("mu" %in% to_plot) {
-      graphics::plot(mu_t, type = "l", col = "#2C3E50", lwd = 1.2,
-                     main = expression("Fitted Location Parameter " * mu(t)),
-                     xlab = "Time Index", ylab = expression(mu(t)), ...)
-      graphics::grid()
-    }
-
-    if ("sigma" %in% to_plot) {
-      graphics::plot(sig_t, type = "l", col = "#E74C3C", lwd = 1.2,
-                     main = expression("Fitted Scale Parameter " * sigma(t)),
-                     xlab = "Time Index", ylab = expression(sigma(t)), ...)
-      graphics::grid()
-    }
-
-    if ("xi" %in% to_plot) {
-      graphics::plot(xi_t, type = "l", col = "#27AE60", lwd = 1.2,
-                     main = expression("Fitted Shape Parameter " * xi(t)),
-                     xlab = "Time Index", ylab = expression(xi(t)), ...)
-      graphics::grid()
-    }
-  }
-
-  invisible(NULL)
 }

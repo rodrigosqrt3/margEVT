@@ -14,6 +14,7 @@ marginalize(
   scenarios = NULL,
   mc_sample = NULL,
   interactions = list(),
+  fixed = list(),
   year_col = "year",
   n_boot = 500L,
   seed = 2024L,
@@ -42,8 +43,8 @@ inherits \code{fit$obs_per_year}.}
 
 \item{scenarios}{Named list of covariate scenarios for approach A. Each
 element is itself a named list of scalar covariate values, passed to
-\code{\link{build_cov_annual}}. If \code{NULL}, a single scenario with
-all covariates set to zero is used.}
+\code{\link{build_cov_annual}}. If \code{NULL}, a single scenario named
+\code{"default"} with all active covariates set to zero is used.}
 
 \item{mc_sample}{List of data frames for approach B. Each element is one
 simulated year of covariates (\code{n_obs} rows). Required if
@@ -52,13 +53,19 @@ simulated year of covariates (\code{n_obs} rows). Required if
 \item{interactions}{Named list of interactions passed to
 \code{\link{build_cov_annual}}. Default \code{list()}.}
 
+\item{fixed}{Named list of scalar covariate values imposed on every
+scenario and trajectory, overriding values from \code{scenarios},
+\code{mc_sample}, and \code{data} (e.g. \code{list(trend = 1)} to
+evaluate return levels at the end of the record). Default \code{list()}.}
+
 \item{year_col}{Name of the year column in \code{data}. Default
 \code{"year"}.}
 
-\item{n_boot}{Integer. Number of bootstrap years for approach C.
+\item{n_boot}{Integer. Number of resampled years for approach C.
 Default \code{500L}.}
 
-\item{seed}{Integer. Random seed for approach C. Default \code{2024L}.}
+\item{seed}{Integer seed for approach C (the caller's random-number stream
+is preserved). Default \code{2024L}.}
 
 \item{tol_root}{Numeric. Root-finding tolerance. Default \code{1e-4}.}
 
@@ -66,8 +73,10 @@ Default \code{500L}.}
 set to \code{3 * max(data$y, na.rm = TRUE)}.}
 }
 \value{
-A data frame with columns \code{approach}, \code{scenario},
-  \code{TR}, \code{RL}.
+A data frame of class \code{nhpp_rl} with columns
+  \code{approach}, \code{scenario}, \code{TR}, \code{RL}, and
+  \code{se_mc} (\code{NA} for approach A). See \code{\link{plot.nhpp_rl}}
+  and \code{\link{rl_table}}.
 }
 \description{
 Given a fitted \code{nhpp_fit} model, computes return levels by
@@ -75,14 +84,38 @@ integrating out covariate uncertainty under one or more approaches:
 }
 \details{
 \describe{
-  \item{A — conditional}{Covariates fixed at user-specified scenarios
+  \item{A - conditional}{Covariates fixed at user-specified scenarios
     (e.g. quantiles of observed distributions). Fast; useful for
     sensitivity analysis.}
-  \item{B — parametric}{Covariates drawn from a user-supplied Monte Carlo
-    sample (e.g. from a fitted VAR or any stochastic generator). The
-    sample is a list of \code{n_obs}-row data frames, one per simulated
-    year.}
-  \item{C — empirical}{Block bootstrap over observed covariate years.
-    Resamples whole years from \code{data} to preserve temporal structure.}
+  \item{B - parametric}{Covariates drawn from a user-supplied Monte Carlo
+    sample of complete annual trajectories (e.g. from
+    \code{\link{simulate_covariates}}).}
+  \item{C - empirical}{Annual-block resampling of observed covariate
+    years from \code{data}, preserving within-year temporal structure.}
 }
+
+For each approach and return period \eqn{T}, the return level solves
+\eqn{G(z) = 1 - 1/T}, where \eqn{G} is the annual non-exceedance
+probability averaged over trajectories. For approaches B and C the
+conditional Monte Carlo standard error of the root,
+\eqn{\hat s_T / (\sqrt{n}\,\hat g_T)}, is reported in \code{se_mc}, with
+\eqn{\hat s_T} the standard deviation of the pathwise probabilities at the
+root and \eqn{\hat g_T} the mean pathwise derivative with respect to the
+level. It measures only finite-ensemble integration error, conditional on
+the fitted model and trajectory law.
+}
+\examples{
+set.seed(1)
+n_years <- 30; n_obs <- 50
+df <- data.frame(x = rnorm(n_years * n_obs),
+                 year = rep(seq_len(n_years), each = n_obs))
+df$y <- 10 + 2 * df$x + rexp(nrow(df), 1 / 3)
+fit <- fit_nhpp(df, threshold = 18, loc_vars = "x", penalty = "none",
+                obs_per_year = n_obs, verbose = FALSE)
+rl <- marginalize(fit, df, TRs = c(5, 10, 50),
+                  scenarios = list(low = list(x = -1), high = list(x = 1)),
+                  n_boot = 200)
+rl
+rl_table(rl)
+
 }

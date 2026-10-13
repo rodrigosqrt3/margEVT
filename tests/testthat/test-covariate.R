@@ -223,3 +223,18 @@ test_that("active_covariates evaluates scale and shape parameters correctly", {
   expect_true("scale_cov" %in% ac)
   expect_true("shape_cov" %in% ac)
 })
+
+test_that("build_cov_annual generates any harmonic column the model needs", {
+  set.seed(2L)
+  n <- 3650L
+  df <- cbind(data.frame(x = stats::rnorm(n)),
+              seasonal_harmonics(rep(1:365, 10), n_harmonics = 3L, sine = "sin"))
+  df$y <- 10 + df$x + 2 * df$cos3 + stats::rexp(n, 1 / 3)
+  fit <- fit_nhpp(df, threshold = 20, loc_vars = c("x", "cos3", "sin3"),
+                  free_vars = c("cos3", "sin3"), penalty = "none",
+                  verbose = FALSE)
+  cov <- build_cov_annual(fit, list(x = 0), n_obs = 365L)
+  expect_equal(cov$cos3, cos(2 * pi * 3 * (1:365) / 365.25))
+  expect_equal(cov$sin3, sin(2 * pi * 3 * (1:365) / 365.25))
+  expect_identical(active_covariates(fit, tol = 1e-8), "x")
+})

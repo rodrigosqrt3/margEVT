@@ -147,8 +147,8 @@ test_that("GPD simulation rejects non-finite generated excesses", {
 
 test_that("bootstrap_rl and bootstrap_coef print verbose progress messages", {
   s <- make_boot_fit()
-  expect_message(bootstrap_rl(s$fit, s$df, TRs = 10, R = 1L, approach = "A", verbose = TRUE), regexp = "replicate 1")
-  expect_message(bootstrap_coef(s$fit, s$df, R = 1L, verbose = TRUE), regexp = "replicate 1")
+  expect_message(bootstrap_rl(s$fit, s$df, TRs = 10, R = 1L, approach = "A", verbose = TRUE), regexp = "replicates succeeded")
+  expect_message(bootstrap_coef(s$fit, s$df, R = 1L, verbose = TRUE), regexp = "replicates succeeded")
 })
 
 test_that("bootstrap functions handle non-convergence skips", {

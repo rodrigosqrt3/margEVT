@@ -22,20 +22,43 @@ simulate_covariates(
 \item{n_obs}{Integer observations per simulated year. If \code{NULL},
 uses the rounded seasonal period stored in \code{generator}.}
 
-\item{burn_in}{Integer. Burn-in applied separately when
+\item{burn_in}{Integer. Burn-in applied when
 \code{initialization = "burnin"}. Default \code{300L}.}
 
 \item{initialization}{Character. \code{"stationary"} (default) draws the
 initial companion state from the fitted stationary Gaussian law;
 \code{"burnin"} starts at zero and applies \code{burn_in} transitions.}
 
-\item{seed}{Integer. Random seed. Default \code{NULL} (not set).}
+\item{seed}{Integer seed or \code{NULL}. When supplied, the caller's
+random-number stream is preserved. Default \code{NULL} (use the current
+stream).}
 }
 \value{
 A list of length \code{n_mc}, each element an \code{n_obs}-row
-  data frame with one column per active covariate - directly usable as
-  \code{mc_sample} in \code{\link{marginalize}} (approach B).
+  data frame of covariates, directly usable as \code{mc_sample} in
+  \code{\link{marginalize}} (approach B).
 }
 \description{
-Simulate stationary covariate trajectories from a VAR generator
+Simulates \code{n_mc} independent annual trajectories. All trajectories
+are propagated simultaneously, so the cost grows with the trajectory
+length rather than with \code{n_mc} times the length. Each trajectory is
+initialized from the stationary Gaussian law of the companion state
+(default) or from zero followed by \code{burn_in} transitions. Seasonality
+is re-added at positions \code{1, ..., n_obs}; if the generator has a
+\code{derive} function, model covariates are recomputed from the
+simulated base variables, using \code{derive_lead} additional leading
+observations that are discarded afterwards.
+}
+\examples{
+set.seed(1)
+n <- 3650
+t <- rep(1:365, 10)
+df <- cbind(data.frame(x = as.numeric(stats::arima.sim(list(ar = 0.6), n))),
+            seasonal_harmonics(t))
+df$y <- 10 + df$x + rexp(n, 1 / 3)
+fit <- fit_nhpp(df, threshold = 20, loc_vars = "x", penalty = "none",
+                verbose = FALSE)
+mc <- simulate_covariates(fit_var_generator(fit, df), n_mc = 3, seed = 1)
+length(mc); dim(mc[[1]])
+
 }

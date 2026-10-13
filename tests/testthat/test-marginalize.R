@@ -339,3 +339,84 @@ test_that("marginalize approach C handles under-observed years", {
     regexp = "approach C produced no valid bootstrap years"
   )
 })
+
+# -----------------------------------------------------------------------------
+# 0.4.0: Monte Carlo standard errors, fixed covariates, class and plot
+# -----------------------------------------------------------------------------
+
+make_mc_fit <- function(seed = 5L) {
+  set.seed(seed)
+  n_years <- 40L; n_obs <- 50L
+  df <- data.frame(x = stats::rnorm(n_years * n_obs),
+                   year = rep(seq_len(n_years), each = n_obs))
+  df$y <- 10 + 2 * df$x + stats::rexp(nrow(df), 1 / 3)
+  list(df = df, n_obs = n_obs,
+       fit = fit_nhpp(df, threshold = 18, loc_vars = "x", penalty = "none",
+                      obs_per_year = n_obs, verbose = FALSE))
+}
+
+test_that("marginalize returns an nhpp_rl object with Monte Carlo errors", {
+  s <- make_mc_fit()
+  mc <- lapply(1:300, function(i) data.frame(x = stats::rnorm(s$n_obs)))
+  res <- marginalize(s$fit, s$df, TRs = c(5, 50), approaches = c("A", "B", "C"),
+                     mc_sample = mc, n_boot = 300L)
+  expect_s3_class(res, "nhpp_rl")
+  expect_true("se_mc" %in% names(res))
+  expect_true(all(is.na(res$se_mc[res$approach == "A"])))
+  expect_true(all(res$se_mc[res$approach != "A"] > 0))
+  expect_silent(plot(res))
+  expect_s3_class(rl_table(res), "data.frame")
+})
+
+test_that("se_mc agrees with the spread of independent ensembles", {
+  s <- make_mc_fit()
+  reps <- t(vapply(1:40, function(r) {
+    set.seed(1000 + r)
+    mc <- lapply(1:150, function(i) data.frame(x = stats::rnorm(s$n_obs)))
+    out <- marginalize(s$fit, s$df, TRs = 20, approaches = "B", mc_sample = mc)
+    c(out$RL, out$se_mc)
+  }, numeric(2L)))
+  expect_equal(stats::sd(reps[, 1L]), mean(reps[, 2L]), tolerance = 0.35)
+})
+
+test_that(".mc_root_se handles non-finite roots, single paths and flat slopes", {
+  expect_true(is.na(margEVT:::.mc_root_se(NA_real_, 0, 1, 0, 1L)))
+  expect_true(is.na(margEVT:::.mc_root_se(1, 0, 1, 0, 1L)))
+  # Far above a finite upper endpoint the pathwise slope is zero.
+  expect_true(is.na(margEVT:::.mc_root_se(50, c(0, 0), c(1, 1),
+                                          c(-0.5, -0.5), 1L)))
+})
+
+test_that("tail measure derivative matches finite differences", {
+  mu <- c(0, 1, 2); sig <- c(1, 2, 1.5); xi <- c(0.2, 0, -0.1)
+  h <- 1e-6
+  fd <- (margEVT:::.tail_measure_at_level(3 + h, mu, sig, xi) -
+           margEVT:::.tail_measure_at_level(3 - h, mu, sig, xi)) / (2 * h)
+  expect_equal(margEVT:::.tail_measure_derivative(3, mu, sig, xi), fd,
+               tolerance = 1e-5)
+  expect_equal(margEVT:::.tail_measure_derivative(30, 0, 1, -0.5), 0)
+})
+
+test_that("fixed covariates override scenarios, trajectories and data", {
+  s <- make_mc_fit()
+  mc <- lapply(1:50, function(i) data.frame(x = stats::rnorm(s$n_obs)))
+  fixed_x <- marginalize(s$fit, s$df, TRs = 10, approaches = c("A", "B", "C"),
+                         scenarios = list(hi = list(x = 3)), mc_sample = mc,
+                         fixed = list(x = 0.5), n_boot = 50L)
+  expect_equal(length(unique(round(fixed_x$RL, 6L))), 1L)
+  ref <- marginalize(s$fit, s$df, TRs = 10, approaches = "A",
+                     scenarios = list(a = list(x = 0.5)))
+  expect_equal(fixed_x$RL[1L], ref$RL)
+  expect_error(marginalize(s$fit, s$df, fixed = list(x = 1:2)), "fixed")
+  expect_error(marginalize(s$fit, s$df, fixed = list(1)), "fixed")
+})
+
+test_that("inactive design columns are filled silently", {
+  s <- make_mc_fit()
+  s$df$z <- stats::rnorm(nrow(s$df))
+  fit <- fit_nhpp(s$df, threshold = 18, loc_vars = c("x", "z"),
+                  penalty = "lasso", lambda = 1e4, obs_per_year = s$n_obs,
+                  verbose = FALSE)
+  expect_null(active_covariates(fit))
+  expect_silent(marginalize(fit, s$df, TRs = 10, n_boot = 20L))
+})

@@ -50,6 +50,21 @@
 #'   for it to be included. Default \code{as.integer(n_obs * 0.8)}.
 #' @param seed Integer. Seed used for empirical annual-block sampling.
 #'   Default \code{2024L}. Each validation window uses a distinct derived seed.
+#' @param trend_col Optional name of a linear time-trend covariate. Within
+#'   each window it is recomputed as \eqn{(t - t_0)/(t_1 - t_0)}, where
+#'   \eqn{t_0} is the first year of \code{data} and \eqn{t_1} the last
+#'   training year, so that the trend equals 1 at the end of training.
+#'   Return levels are evaluated at trend 1; the PIT of a validation year
+#'   uses its extrapolated trend value. Default \code{NULL} (no trend).
+#' @param fixed Named list of scalar covariate values imposed on every
+#'   covariate block (see \code{\link{marginalize}}). Default \code{list()}.
+#' @param reselect_lambda Logical. If \code{TRUE}, the penalty is re-selected
+#'   by BIC in every training window; otherwise the original \code{lambda} is
+#'   kept. Adaptive penalty weights are always recomputed within each training
+#'   window, so the weights do not use validation data. Default \code{FALSE}.
+#' @param cores Positive integer number of worker processes over which the
+#'   windows are distributed. Results do not depend on \code{cores}.
+#'   Default \code{1L}.
 #' @param verbose Logical. Print progress. Default \code{TRUE}.
 #'
 #' @return A list with three elements:
@@ -64,6 +79,23 @@
 #'     \code{calibrated} alias, or \code{NULL} if fewer than 5 validation
 #'     years had events.}
 #'
+#' @seealso \code{\link{marginalize}}, \code{\link{fit_nhpp}}
+#'
+#' @examples
+#' set.seed(1)
+#' n_years <- 30; n_obs <- 50
+#' df <- data.frame(x = rnorm(n_years * n_obs),
+#'                  year = rep(1991:2020, each = n_obs))
+#' df$y <- 5 + df$x + rexp(nrow(df), 1 / 2)
+#' fit <- fit_nhpp(df, threshold = 10, loc_vars = "x", penalty = "none",
+#'                 obs_per_year = n_obs, verbose = FALSE)
+#' \donttest{
+#' bt <- backtest(fit, df, varname = "y", TRs = c(2, 5), n_obs = n_obs,
+#'                window_years = 5, min_train_years = 15, n_boot = 50,
+#'                verbose = FALSE)
+#' bt$binom_tests
+#' }
+#'
 #' @export
 backtest <- function(fit, data, varname,
                      TRs             = c(2, 5, 10),
@@ -76,6 +108,10 @@ backtest <- function(fit, data, varname,
                      year_col        = "year",
                      min_obs_year    = NULL,
                      seed            = 2024L,
+                     trend_col       = NULL,
+                     fixed           = list(),
+                     reselect_lambda = FALSE,
+                     cores           = 1L,
                      verbose         = TRUE) {
 
   if (!inherits(fit, "nhpp_fit"))
@@ -93,6 +129,17 @@ backtest <- function(fit, data, varname,
     stop("backtest: `TRs` must contain finite return periods greater than 1.")
   if (!is.numeric(seed) || length(seed) != 1L || !is.finite(seed))
     stop("backtest: `seed` must be a single finite numeric value.")
+  if (!is.logical(reselect_lambda) || length(reselect_lambda) != 1L ||
+      is.na(reselect_lambda))
+    stop("backtest: `reselect_lambda` must be TRUE or FALSE.")
+  cores <- .validate_cores(cores, "backtest")
+  .validate_fixed(fixed, "backtest")
+  model_cols <- unique(c(colnames(fit$dm$X_mu), colnames(fit$dm$X_sigma),
+                         colnames(fit$dm$X_xi)))
+  if (!is.null(trend_col) &&
+      (!is.character(trend_col) || length(trend_col) != 1L ||
+       !trend_col %in% model_cols))
+    stop("backtest: `trend_col` must name a covariate of the fitted model.")
 
   inherited_obs <- if (is.null(fit$obs_per_year)) 365.25 else fit$obs_per_year
   n_obs        <- if (is.null(n_obs)) as.integer(round(inherited_obs)) else
@@ -127,7 +174,8 @@ backtest <- function(fit, data, varname,
                                       use.names = FALSE))
   direct_active <- if (is.null(ac)) character(0L) else
     setdiff(ac, interaction_outputs)
-  ac_in_data <- unique(c(direct_active, interaction_inputs))
+  ac_in_data <- setdiff(unique(c(direct_active, interaction_inputs)),
+                        c(trend_col, names(fixed)))
   missing_covariates <- setdiff(ac_in_data, names(data))
   if (length(missing_covariates) > 0L)
     stop("backtest: required covariates not found in data: ",
@@ -146,56 +194,100 @@ backtest <- function(fit, data, varname,
     )
   })
 
-  results_list <- list()
+  # Adaptive weights are recomputed inside every training window (no look-ahead);
+  # user-supplied weights are kept.
+  weights_source <- if (is.null(fit$weights_source)) "none" else
+    fit$weights_source
+  window_weights <- if (startsWith(weights_source, "adaptive")) "adaptive" else
+    NULL
+  window_lambda <- if (reselect_lambda && fit$penalty != "none") "bic" else
+    fit$lambda
+  z_hi <- max(data[[varname]], na.rm = TRUE) * 3
+  covariate_cols <- model_cols[model_cols != "(Intercept)" &
+                                 !.is_harmonic(model_cols)]
 
-  for (j in seq_along(windows)) {
+  # Value of the trend covariate in `years` for a window whose training
+  # period ends in `train_end`; equals 1 at the end of training.
+  trend_value <- function(years, train_end)
+    (years - min_year) / (train_end - min_year)
+
+  # Replaces the trend column of a covariate block and refreshes the
+  # interactions that use it.
+  set_trend <- function(cm, value) {
+    cm[[trend_col]] <- value
+    for (nm in names(interactions))
+      if (trend_col %in% interactions[[nm]])
+        cm[[nm]] <- cm[[interactions[[nm]][1L]]] * cm[[interactions[[nm]][2L]]]
+    cm
+  }
+
+  # One walk-forward window: returns validation rows and progress messages.
+  # Deterministic given `j`, so the result does not depend on `cores`.
+  run_window <- function(j) {
     w         <- windows[[j]]
     train_yrs <- all_years[all_years <= w$train_up_to]
     val_yrs   <- all_years[all_years >= w$val_start &
                              all_years <= w$val_end]
+    msgs <- character(0L)
+    if (length(train_yrs) < 2L || length(val_yrs) == 0L)
+      return(list(rows = list(), msgs = msgs))
 
-    if (length(train_yrs) < 2L || length(val_yrs) == 0L) next
-
-    if (verbose)
-      message(sprintf("[Window %d] Train: %d-%d | Val: %d-%d",
-                      j, min(train_yrs), max(train_yrs),
-                      w$val_start, w$val_end))
+    msgs <- sprintf("[Window %d] Train: %d-%d | Val: %d-%d",
+                    j, min(train_yrs), max(train_yrs), w$val_start, w$val_end)
+    train_end <- max(train_yrs)
 
     df_train <- data[data[[year_col]] %in% train_yrs, , drop = FALSE]
-
-    fit_w <- .refit_boot(df_train, fit)
-    if (is.null(fit_w) || !fit_w$converged) {
-      if (verbose) message("  -> Did not converge, skipping window.")
-      next
+    fixed_w  <- fixed
+    if (!is.null(trend_col)) {
+      df_train[[trend_col]] <- trend_value(df_train[[year_col]], train_end)
+      fixed_w[[trend_col]]  <- 1
     }
+
+    fit_w <- .refit_boot(df_train, fit, lambda = window_lambda,
+                         penalty_weights = window_weights)
+    if (is.null(fit_w) || !fit_w$converged)
+      return(list(rows = list(),
+                  msgs = c(msgs, "  -> Did not converge, skipping window.")))
+
+    # Covariates resampled for this window: those required by the original
+    # fit plus any that are active in the window refit. Columns inactive in
+    # the window refit do not affect the parameters and are set to zero.
+    ac_w <- active_covariates(fit_w)
+    inputs_w <- unique(c(
+      setdiff(ac_w, interaction_outputs),
+      unlist(interactions[interaction_outputs %in% ac_w], use.names = FALSE)
+    ))
+    cols_w <- setdiff(unique(c(ac_in_data, intersect(inputs_w, names(data)))),
+                      c(trend_col, names(fixed)))
+    inactive_w <- setdiff(covariate_cols,
+                          c(cols_w, interaction_outputs, trend_col, names(fixed)))
+    fixed_w <- utils::modifyList(
+      stats::setNames(as.list(rep(0, length(inactive_w))), inactive_w),
+      fixed_w)
 
     cov_w <- .build_cov_bootstrap(
       fit_w        = fit_w,
       data         = data,
       train_yrs    = train_yrs,
-      ac_in_data   = ac_in_data,
+      ac_in_data   = cols_w,
       n_boot       = n_boot,
       n_obs        = n_obs,
       interactions = interactions,
       year_col     = year_col,
       period       = period,
-      seed         = as.integer(seed) + j - 1L
+      seed         = as.integer(seed) + j - 1L,
+      fixed        = fixed_w
     )
-    if (length(cov_w) == 0L) {
-      if (verbose) message("  -> No valid covariate blocks, skipping window.")
-      next
-    }
+    if (length(cov_w) == 0L)
+      return(list(rows = list(),
+                  msgs = c(msgs, "  -> No valid covariate blocks, skipping window.")))
 
-    rl_w <- .compute_rl_from_cov_list(fit_w, cov_w, TRs, thr,
-                                      max(data[[varname]], na.rm = TRUE) * 3,
-                                      n_obs)
+    rl_w <- .compute_rl_from_cov_list(fit_w, cov_w, TRs, thr, z_hi, n_obs)
+    msgs <- c(msgs, sprintf("  RLs: %s",
+                            paste(paste0("T", TRs, "=", round(rl_w, 1)),
+                                  collapse = " | ")))
 
-    if (verbose)
-      message(sprintf("  RLs: %s",
-                      paste(paste0("T", TRs, "=", round(rl_w, 1)),
-                            collapse = " | ")))
-
-    for (yr in val_yrs) {
+    rows <- lapply(val_yrs, function(yr) {
       df_yr  <- data[data[[year_col]] == yr, , drop = FALSE]
       y_yr   <- df_yr[[varname]]
       exc_yr <- y_yr[!is.na(y_yr) & y_yr > thr]
@@ -205,8 +297,11 @@ backtest <- function(fit, data, varname,
       if (is.na(M_yr) || !valid_year) {
         F_yr <- NA_real_
       } else {
-        # PIT: P(annual max <= M_yr) under the training model
-        F_vals <- vapply(cov_w, function(cm)
+        # PIT: P(annual max <= M_yr) under the training model, with the
+        # trend extrapolated to the validation year.
+        cov_yr <- if (is.null(trend_col)) cov_w else
+          lapply(cov_w, set_trend, value = trend_value(yr, train_end))
+        F_vals <- vapply(cov_yr, function(cm)
           .f_annual_one(M_yr, fit_w, cm), numeric(1L))
         F_yr <- if (all(is.finite(F_vals))) mean(F_vals) else NA_real_
       }
@@ -226,10 +321,15 @@ backtest <- function(fit, data, varname,
         F_ann     = round(F_yr, 4L),
         has_event = length(exc_yr) > 0L
       )
-      row <- cbind(row, t(superou))
-      results_list[[length(results_list) + 1L]] <- row
-    }
+      cbind(row, t(superou))
+    })
+    list(rows = rows, msgs = msgs)
   }
+
+  window_out <- .par_lapply(seq_along(windows), run_window, cores = cores)
+  if (verbose)
+    for (wo in window_out) for (m in wo$msgs) message(m)
+  results_list <- unlist(lapply(window_out, `[[`, "rows"), recursive = FALSE)
 
   if (length(results_list) == 0L) {
     warning("backtest: no validation results produced.")
@@ -316,11 +416,12 @@ backtest <- function(fit, data, varname,
 # Sample n_boot years of covariates from training years.
 .build_cov_bootstrap <- function(fit_w, data, train_yrs, ac_in_data,
                                  n_boot, n_obs, interactions, year_col,
-                                 period = NULL, seed = 2024L) {
+                                 period = NULL, seed = 2024L,
+                                 fixed = list()) {
 
   if (length(ac_in_data) == 0L) {
     return(lapply(seq_len(n_boot), function(i)
-      build_cov_annual(fit_w, list(), n_obs = n_obs,
+      build_cov_annual(fit_w, fixed, n_obs = n_obs,
                        period = period,
                        interactions = interactions)))
   }
@@ -354,7 +455,7 @@ backtest <- function(fit, data, varname,
         df_yr <- rbind(df_yr,
                        df_yr[rep(nrow(df_yr), falta), , drop = FALSE])
       }
-      build_cov_annual(fit_w, as.list(df_yr),
+      build_cov_annual(fit_w, utils::modifyList(as.list(df_yr), fixed),
                        n_obs = n_obs, period = period,
                        interactions = interactions)
     })

@@ -2,36 +2,90 @@
 % Please edit documentation in R/generator.R
 \name{fit_var_generator}
 \alias{fit_var_generator}
-\title{Fit a generic VAR generator over a model's active covariates}
+\title{Fit a stationary VAR generator of covariate trajectories}
 \usage{
-fit_var_generator(fit, data, vars = NULL, period = NULL, lag_max = NULL)
+fit_var_generator(
+  fit,
+  data,
+  vars = NULL,
+  period = NULL,
+  lag_max = NULL,
+  n_harmonics = 2L,
+  derive = NULL,
+  derive_lead = 0L
+)
 }
 \arguments{
 \item{fit}{An \code{nhpp_fit} object.}
 
-\item{data}{Data frame used to fit \code{fit} (or any data frame
-containing the same covariate columns, plus seasonal harmonics if
-you already have them).}
+\item{data}{Data frame containing the base variables (and, optionally,
+seasonal harmonic columns).}
 
-\item{vars}{Character vector of covariate names to model. Default
-\code{NULL}: uses \code{active_covariates(fit)}, intersected with
-\code{names(data)}.}
+\item{vars}{Character vector of base variables. Default \code{NULL}: the
+active covariates of \code{fit} present in \code{data}.}
 
 \item{period}{Numeric seasonal period in observations. If \code{NULL},
 inherits \code{fit$obs_per_year}; legacy objects fall back to \code{365.25}.}
 
-\item{lag_max}{Integer. Max VAR lag considered by \code{VARselect}.
-Default \code{NULL}: \code{min(5, floor(n / (3*K)))}.}
+\item{lag_max}{Integer. Maximum VAR order considered. Default \code{NULL}:
+\code{min(5, floor(n / (3 K)))}.}
+
+\item{n_harmonics}{Positive integer number of harmonic pairs used for
+deseasonalization. Default \code{2}.}
+
+\item{derive}{Optional function taking a data frame of simulated base
+variables (plus the harmonic columns) for one trajectory and returning a
+data frame with the same number of rows containing the model covariates.}
+
+\item{derive_lead}{Non-negative integer number of leading observations
+simulated before each year so that \code{derive} has the history it
+needs (e.g. the window of a lag or rolling mean). Default \code{0}.}
 }
 \value{
-An object of class \code{nhpp_var_generator}, including the fitted
-  root moduli and spectral radius, or \code{NULL} (with a warning) if the
-  model has no active covariates. An unstable selected VAR causes an error.
+An object of class \code{nhpp_var_generator}, including the
+  coefficient matrix, innovation covariance, root moduli and spectral
+  radius, or \code{NULL} (with a warning) if there are no variables to
+  model. An unstable selected VAR causes an error.
 }
 \description{
-Deseasonalizes each active covariate column in \code{data} (regressing
-on \code{cos1, sen1, cos2, sen2}), then fits a multivariate VAR to the
-standardized residuals. No covariate names are hardcoded: whatever
-\code{\link{active_covariates}} returns (or whatever you pass in
-\code{vars}) is treated as a final, ready-to-model column.
+Deseasonalizes each base variable by OLS on \code{n_harmonics} Fourier
+harmonic pairs, standardizes the residuals, and fits a stable
+vector autoregression VAR(p) without intercept by least squares, with the
+order selected by the Schwarz criterion on a common estimation sample
+(the convention of \code{vars::VARselect}). A univariate base variable
+gives a stable AR(p) model.
+}
+\details{
+By default the base variables are the active covariates of \code{fit}.
+When model covariates are deterministic transformations of a smaller set
+of base variables (lags, rolling means, differences, interactions,
+standardizations), supply the base variables in \code{vars} and a
+\code{derive} function: \code{\link{simulate_covariates}} then simulates
+the base variables and recomputes the model covariates on each
+trajectory, preserving their deterministic relations.
+
+Seasonal harmonics present in \code{data} (\code{cos<k>}, \code{sen<k>} or
+\code{sin<k>}) are reused; otherwise they are computed from the row index,
+which assumes contiguous rows starting at the first position of a year.
+}
+\examples{
+set.seed(1)
+n <- 3650
+t <- rep(1:365, 10)
+x <- as.numeric(stats::arima.sim(list(ar = 0.7), n)) + 2 * cos(2 * pi * t / 365.25)
+df <- cbind(data.frame(x = x), seasonal_harmonics(t))
+df$y <- 10 + df$x + rexp(n, 1 / 3)
+fit <- fit_nhpp(df, threshold = 20, loc_vars = "x", penalty = "none",
+                verbose = FALSE)
+gen <- fit_var_generator(fit, df)
+gen$p_opt
+gen$spectral_radius
+
+# Model covariates derived from a base variable: the lagged value of x
+df$x_lag1 <- c(NA, head(df$x, -1))
+gen_d <- fit_var_generator(
+  fit, df[-1, ], vars = "x", derive_lead = 1,
+  derive = function(b) data.frame(x = b$x, x_lag1 = c(NA, head(b$x, -1))))
+head(simulate_covariates(gen_d, n_mc = 2, seed = 1)[[1]])
+
 }

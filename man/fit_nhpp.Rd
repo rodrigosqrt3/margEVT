@@ -17,7 +17,12 @@ fit_nhpp(
   penalize_shape = TRUE,
   obs_per_year = 365.25,
   active_tol = 0.01,
-  lambda_scaling = c("gradient", "common"),
+  lambda_scaling = c("common", "gradient"),
+  penalty_weights = "none",
+  adaptive_gamma = 1,
+  lambda_grid = NULL,
+  init = NULL,
+  grad_tol = 5e-04,
   maxit = 10000L,
   calc_hessian = FALSE,
   verbose = TRUE
@@ -32,7 +37,7 @@ Must have a column named \code{y} (the observations).}
 \item{loc_vars}{Character vector of covariate names for the location
 parameter. \code{NULL} for stationary location.}
 
-\item{scale_vars}{Character vector of covariate names for the scale
+\item{scale_vars}{Character vector of covariate names for the log-scale
 parameter. \code{NULL} for stationary scale.}
 
 \item{shape_vars}{Character vector of covariate names for the shape
@@ -50,36 +55,99 @@ Only used when \code{penalty = "elnet"}. 1 = LASSO, 0 = ridge.
 Scalar or named vector \code{c(mu = , sigma = , xi = )}.}
 
 \item{lambda}{Numeric scalar or named vector \code{c(mu=, sigma=, xi=)},
-or \code{"bic"} to select automatically via a two-phase BIC grid search.
-Ignored when \code{penalty = "none"}.}
+or \code{"bic"} to select automatically by BIC along a regularization
+path. Ignored when \code{penalty = "none"}.}
 
 \item{penalize_shape}{Logical. Penalize shape parameter covariates?
 Default \code{TRUE}.}
 
 \item{obs_per_year}{Numeric. Observations per year. E.g. \code{365.25}
-for daily data, \code{52} for weekly. Default \code{365.25}.}
+for daily data, \code{365.25 / 7} for weekly. Default \code{365.25}.}
 
 \item{active_tol}{Positive numeric tolerance used for BIC complexity
 counting, active-covariate extraction, and default coefficient reporting.
 Default \code{1e-2}.}
 
 \item{lambda_scaling}{Character. Scaling used when \code{lambda = "bic"}:
-\code{"gradient"} calibrates the scale and shape penalties relative to
-the location-block score magnitude; \code{"common"} applies the same
-scalar lambda to all parameter blocks. Ignored for numeric \code{lambda}.}
+\code{"common"} (default) applies the same scalar lambda to all parameter
+blocks; \code{"gradient"} calibrates the scale and shape penalties
+relative to the location-block score magnitude at the initial model.
+Ignored for numeric \code{lambda}.}
+
+\item{penalty_weights}{Coordinate weights multiplying \code{lambda}:
+\code{"none"} (default, unit weights), \code{"adaptive"} for the adaptive
+LASSO with weights \eqn{1/|\tilde\theta_k|^\gamma} computed from an
+initial unpenalized fit (ridge fallback), or a non-negative numeric
+vector with one entry per parameter (names, if present, must match the
+parameter names). Weights of unpenalized coordinates are ignored.}
+
+\item{adaptive_gamma}{Positive exponent \eqn{\gamma} of the adaptive
+weights. Default \code{1}.}
+
+\item{lambda_grid}{Optional decreasing numeric vector of base penalties
+used for BIC selection instead of the default two-phase grid.}
+
+\item{init}{Optional numeric starting vector, one entry per parameter.}
+
+\item{grad_tol}{Positive tolerance for the KKT violation divided by the
+number of exceedances. Default \code{5e-4}.}
 
 \item{maxit}{Integer. Maximum optimizer iterations. Default \code{10000L}.}
 
-\item{calc_hessian}{Logical. Compute Hessian at solution? Needed for
-delta-method standard errors. Default \code{FALSE}.}
+\item{calc_hessian}{Logical. Compute the Hessian of the penalized
+objective at the solution? Default \code{FALSE}.}
 
 \item{verbose}{Logical. Print progress during BIC grid search and
 convergence warnings. Default \code{TRUE}.}
 }
 \value{
-An object of class \code{nhpp_fit}.
+An object of class \code{nhpp_fit}. Besides the smooth optimizer
+  solution (\code{par}) and the operational activity-thresholded solution
+  (\code{par_oper}), it stores the penalty weights, the scaled KKT
+  violation (\code{kkt}), and, for \code{lambda = "bic"}, the evaluated
+  regularization path (\code{path}).
 }
 \description{
 Fits a peaks-over-threshold point process model via penalized maximum
-likelihood with BFGS optimization and exact analytical gradients.
+likelihood with quasi-Newton optimization and exact analytical gradients.
+The location, log-scale, and shape parameters are linear in the supplied
+covariates; seasonal harmonics and other \code{free_vars} are never
+penalized.
+}
+\details{
+Convergence is assessed with the Karush-Kuhn-Tucker (KKT) conditions of
+the smoothed elastic-net objective: unpenalized and active coordinates
+must have a near-zero gradient, while penalized coordinates numerically at
+zero must satisfy the subgradient condition. The violation is scaled by
+the number of exceedances and compared with \code{grad_tol}.
+
+When \code{lambda = "bic"}, the regularization path is evaluated on a
+coarse grid followed by a refined grid around the provisional optimum (or
+on a user-supplied \code{lambda_grid}). The returned model is the path
+solution at the selected penalty, so the reported fit is exactly the one
+scored by the BIC.
+}
+\examples{
+set.seed(42)
+n <- 2000
+df <- data.frame(x1 = rnorm(n), x2 = rnorm(n))
+df$y <- 10 + 2 * df$x1 + rexp(n, 1 / 3)
+
+# Unpenalized stationary-shape model
+fit0 <- fit_nhpp(df, threshold = 18, loc_vars = c("x1", "x2"),
+                 penalty = "none", verbose = FALSE)
+coef(fit0)
+
+\donttest{
+# Adaptive LASSO with BIC-selected penalty
+fit <- fit_nhpp(df, threshold = 18, loc_vars = c("x1", "x2"),
+                penalty = "lasso", lambda = "bic",
+                penalty_weights = "adaptive", verbose = FALSE)
+summary(fit)
+}
+
+}
+\seealso{
+\code{\link{marginalize}}, \code{\link{bootstrap_coef}},
+  \code{\link{plot.nhpp_fit}}
 }

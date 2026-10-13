@@ -1,30 +1,38 @@
 Package: margEVT
 Type: Package
 Title: Regularized Point Processes and Stochastic Marginalization for Extremes
-Version: 0.3.0
+Version: 0.4.0
 Authors@R: c(
     person("Rodrigo Fonseca", "Villa", email = "rodrigo03.villa@gmail.com",
            role = c("aut", "cre"),
            comment = c(ORCID = "0009-0005-2938-2270"))
     )
 Description: Implements a non-stationary extreme value analysis framework
-    by coupling a covariate-driven Non-Homogeneous Poisson Process (NHPP)
-    with Elastic-Net regularization and analytical gradients. Provides
-    methods for estimating conditional return levels and unconditional
-    (marginalized) return levels via parametric stochastic integration over
-    stable Vector Autoregressive VAR(p) or univariate autoregressive covariate
+    by coupling a covariate-driven non-homogeneous Poisson process (NHPP)
+    with (adaptive) elastic-net regularization and analytical gradients.
+    Provides methods for estimating conditional return levels and
+    unconditional (marginalized) return levels via parametric stochastic
+    integration over stable vector autoregressive VAR(p) covariate
     trajectories, or non-parametric annual-block resampling. Supports
-    block-specific penalty controls, operational active-set thresholds,
-    conditional parametric bootstrap inference, and walk-forward assessment.
+    block-specific penalty controls, BIC selection along a regularization
+    path, Karush-Kuhn-Tucker convergence checks, time-rescaling residual
+    diagnostics, conditional parametric bootstrap inference, and
+    walk-forward assessment.
 License: GPL (>= 3)
 Encoding: UTF-8
 URL: https://github.com/rodrigosqrt3/margEVT
 BugReports: https://github.com/rodrigosqrt3/margEVT/issues
 RoxygenNote: 7.3.3
 Imports:
+    graphics,
+    grDevices,
+    parallel,
     stats,
-    utils,
-    vars
+    utils
 Suggests:
-    testthat (>= 3.0.0)
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0),
+    vars
+VignetteBuilder: knitr
 Config/testthat/edition: 3

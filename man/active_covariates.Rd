@@ -23,6 +23,16 @@ Character vector of active covariate names, or \code{NULL} if
 }
 \description{
 Returns the covariate names that appear in the model with a non-negligible
-coefficient — i.e. those that actually affect the parameters and need to
-be supplied during marginalization.
+coefficient - i.e. those that actually affect the parameters and need to
+be supplied during marginalization. Seasonal harmonic columns
+(\code{cos<k>}, \code{sin<k>}, \code{sen<k>}) are always excluded.
+}
+\examples{
+set.seed(1)
+df <- data.frame(x = rnorm(2000), z = rnorm(2000))
+df$y <- 10 + 2 * df$x + rexp(2000, 1 / 3)
+fit <- fit_nhpp(df, threshold = 18, loc_vars = c("x", "z"),
+                penalty = "lasso", lambda = 5, verbose = FALSE)
+active_covariates(fit)
+
 }

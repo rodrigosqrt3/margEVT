@@ -13,6 +13,7 @@ bootstrap_rl(
   marginalize_args = list(),
   level = 0.95,
   seed = 42L,
+  cores = 1L,
   verbose = TRUE
 )
 }
@@ -31,11 +32,14 @@ replicate: \code{"A"}, \code{"B"}, or \code{"C"}. Default \code{"C"}.}
 
 \item{marginalize_args}{Named list of additional arguments passed to
 \code{\link{marginalize}} (e.g. \code{n_boot}, \code{seed},
-\code{scenarios}, \code{interactions}).}
+\code{scenarios}, \code{fixed}, \code{interactions}).}
 
 \item{level}{Numeric. Confidence level. Default \code{0.95}.}
 
-\item{seed}{Integer. Random seed. Default \code{42L}.}
+\item{seed}{Seed of the replicate streams, or \code{NULL} to derive it
+from the current random-number state. Default \code{42L}.}
+
+\item{cores}{Positive integer number of worker processes. Default \code{1L}.}
 
 \item{verbose}{Logical. Print progress. Default \code{TRUE}.}
 }
@@ -43,13 +47,36 @@ replicate: \code{"A"}, \code{"B"}, or \code{"C"}. Default \code{"C"}.}
 A data frame with columns \code{TR}, \code{RL_est} (the return
   level from the original fitted model under the requested approach),
   \code{CI_low}, \code{CI_high}, \code{n_ok} (number of successful
-  replicates).
+  replicates). The \code{R x length(TRs)} matrix of replicate return
+  levels is attached as attribute \code{"replicates"}.
 }
 \description{
 Simulates \code{R} bootstrap samples from the fitted model, refits at the
-original model design, penalty, lambda, and activity tolerance, recomputes
-return levels via \code{\link{marginalize}}, and returns empirical quantile
-intervals. Exceedance count and times are held fixed, so the result is a
-nominal conditional summary rather than unconditional or post-selection
+original model design, penalty, lambda, penalty weights, and activity
+tolerance (starting from the original estimate), recomputes return levels
+via \code{\link{marginalize}}, and returns empirical percentile intervals.
+Exceedance count and times are held fixed, so the result is a nominal
+conditional summary rather than unconditional or post-selection
 inference.
+}
+\details{
+Each replicate uses its own L'Ecuyer-CMRG random-number stream derived
+from \code{seed}, so the output does not depend on \code{cores}. The
+caller's random-number state is left untouched when \code{seed} is
+supplied.
+}
+\examples{
+set.seed(1)
+df <- data.frame(x = rnorm(1500))
+df$y <- 10 + df$x + rexp(1500, 1 / 3)
+fit <- fit_nhpp(df, threshold = 18, loc_vars = "x", penalty = "none",
+                verbose = FALSE)
+\donttest{
+bootstrap_rl(fit, df, TRs = c(10, 50), R = 50, approach = "A",
+             verbose = FALSE)
+}
+
+}
+\seealso{
+\code{\link{bootstrap_coef}}, \code{\link{marginalize}}
 }

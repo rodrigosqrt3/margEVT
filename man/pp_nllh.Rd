@@ -13,7 +13,8 @@ pp_nllh(
   alpha = 0.5,
   pen_xi = TRUE,
   eps_l1 = 1e-10,
-  obs_per_year = 365.25
+  obs_per_year = 365.25,
+  penalty_weights = NULL
 )
 }
 \arguments{
@@ -25,21 +26,37 @@ pp_nllh(
 
 \item{threshold}{Numeric scalar. The extreme value threshold u.}
 
-\item{lambda}{Penalty strength. Either a scalar or named vector
-\code{c(mu=, sigma=, xi=)}.}
+\item{lambda}{Penalty strength. Either a scalar or a vector
+\code{c(mu=, sigma=, xi=)} (named, or unnamed in that order).}
 
 \item{alpha}{Elastic-net mixing parameter in [0,1]. 1 = LASSO, 0 = ridge.
-Either a scalar or named vector \code{c(mu=, sigma=, xi=)}.}
+Either a scalar or a vector \code{c(mu=, sigma=, xi=)}.}
 
 \item{pen_xi}{Logical. Should the shape parameter covariates be penalized?}
 
 \item{eps_l1}{Small positive constant for smooth L1 approximation.}
 
 \item{obs_per_year}{Number of observations per year (e.g. 365.25 for daily).}
+
+\item{penalty_weights}{Optional non-negative numeric vector of length
+\code{length(par)} multiplying \code{lambda} coordinate by coordinate
+(e.g. adaptive-LASSO weights). \code{NULL} (default) means unit weights.}
 }
 \value{
-Scalar. The penalized negative log-likelihood value.
+Scalar. The penalized negative log-likelihood value. Parameter
+  vectors outside the point-process support return \code{1e9}.
 }
 \description{
-Penalized negative log-likelihood for the NHPP model
+Evaluates the negative log-likelihood of the non-homogeneous Poisson
+process (point-process) representation of threshold exceedances, plus a
+smoothed elastic-net penalty on the penalized coefficients.
+}
+\examples{
+set.seed(1)
+df <- data.frame(y = c(rexp(300), runif(30, 5, 10)), x = rnorm(330))
+dm <- build_design_matrices(df, loc_vars = "x")
+par <- c(6, 0.1, log(1.5), 0.1)
+pp_nllh(par, dm, df$y, threshold = 4, lambda = 0)
+pp_nllh(par, dm, df$y, threshold = 4, lambda = 1)
+
 }

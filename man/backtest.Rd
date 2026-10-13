@@ -18,6 +18,10 @@ backtest(
   year_col = "year",
   min_obs_year = NULL,
   seed = 2024L,
+  trend_col = NULL,
+  fixed = list(),
+  reselect_lambda = FALSE,
+  cores = 1L,
   verbose = TRUE
 )
 }
@@ -60,6 +64,25 @@ for it to be included. Default \code{as.integer(n_obs * 0.8)}.}
 \item{seed}{Integer. Seed used for empirical annual-block sampling.
 Default \code{2024L}. Each validation window uses a distinct derived seed.}
 
+\item{trend_col}{Optional name of a linear time-trend covariate. Within
+each window it is recomputed as \eqn{(t - t_0)/(t_1 - t_0)}, where
+\eqn{t_0} is the first year of \code{data} and \eqn{t_1} the last
+training year, so that the trend equals 1 at the end of training.
+Return levels are evaluated at trend 1; the PIT of a validation year
+uses its extrapolated trend value. Default \code{NULL} (no trend).}
+
+\item{fixed}{Named list of scalar covariate values imposed on every
+covariate block (see \code{\link{marginalize}}). Default \code{list()}.}
+
+\item{reselect_lambda}{Logical. If \code{TRUE}, the penalty is re-selected
+by BIC in every training window; otherwise the original \code{lambda} is
+kept. Adaptive penalty weights are always recomputed within each training
+window, so the weights do not use validation data. Default \code{FALSE}.}
+
+\item{cores}{Positive integer number of worker processes over which the
+windows are distributed. Results do not depend on \code{cores}.
+Default \code{1L}.}
+
 \item{verbose}{Logical. Print progress. Default \code{TRUE}.}
 }
 \value{
@@ -84,4 +107,23 @@ binomial tests. A Kolmogorov-Smirnov comparison on tail-conditional PIT
 values is returned as an exploratory diagnostic; it is not a formal test
 of global predictive calibration. Validation years with fewer than
 \code{min_obs_year} observed values are excluded from binomial denominators.
+}
+\examples{
+set.seed(1)
+n_years <- 30; n_obs <- 50
+df <- data.frame(x = rnorm(n_years * n_obs),
+                 year = rep(1991:2020, each = n_obs))
+df$y <- 5 + df$x + rexp(nrow(df), 1 / 2)
+fit <- fit_nhpp(df, threshold = 10, loc_vars = "x", penalty = "none",
+                obs_per_year = n_obs, verbose = FALSE)
+\donttest{
+bt <- backtest(fit, df, varname = "y", TRs = c(2, 5), n_obs = n_obs,
+               window_years = 5, min_train_years = 15, n_boot = 50,
+               verbose = FALSE)
+bt$binom_tests
+}
+
+}
+\seealso{
+\code{\link{marginalize}}, \code{\link{fit_nhpp}}
 }

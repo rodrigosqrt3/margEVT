@@ -17,5 +17,16 @@ for the active parameter count. If \code{NULL}, inherits
 Numeric scalar. BIC value.
 }
 \description{
-Compute BIC for a fitted nhpp_fit model
+Computes \eqn{-2\ell + k \log m}, where \eqn{\ell} is the unpenalized
+log-likelihood at the operational estimator, \eqn{k} the number of active
+parameters, and \eqn{m} the number of exceedances. Equivalent to
+\code{BIC(fit)} for fits produced by \code{margEVT} 0.4.0 or later.
+}
+\examples{
+set.seed(1)
+df <- data.frame(y = c(rexp(300), runif(30, 5, 10)), x = rnorm(330))
+fit <- fit_nhpp(df, threshold = 4, loc_vars = "x", penalty = "none",
+                verbose = FALSE)
+bic_nhpp(fit)
+
 }

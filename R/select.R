@@ -1,16 +1,17 @@
 # =============================================================================
 # select.R
-# BIC-based two-phase lambda selection for penalized NHPP models.
+# BIC-based lambda selection for penalized NHPP models.
 #
-# .select_lambda_bic() is internal — called by fit_nhpp() when lambda = "bic".
-# Users never call this directly.
+# .select_lambda_bic() is internal - called by fit_nhpp() when lambda = "bic".
 #
 # Algorithm:
-#   Phase 1: coarse log-spaced grid, early stopping when BIC valley is found.
-#   Phase 2: fine grid bracketing the coarse optimum.
-#   Block-calibrated lambda: separate lambda per parameter block (mu, sigma, xi)
-#   scaled by the gradient magnitude at the null model, so each block is
-#   penalized proportionally to its natural scale.
+#   Default: Phase 1 coarse log-spaced grid (early stopping when a BIC valley
+#   is found), then Phase 2 fine grid bracketing the coarse optimum.
+#   With a user-supplied `lambda_grid`, a single pass over that grid is made.
+#   Each path solution is warm-started from the previous smooth solution; the
+#   BIC is evaluated at the operational (activity-thresholded) estimator.
+#   The selected lambda is returned together with its path solution, so the
+#   final model is exactly the one scored by the criterion.
 # =============================================================================
 
 #' BIC-based lambda selection for penalized NHPP models (internal)
@@ -23,32 +24,37 @@
 #' @param init Named numeric starting parameter vector.
 #' @param obs_per_year Numeric.
 #' @param active_tol Positive numeric tolerance for BIC complexity counting.
+#' @param lambda_scaling Character, \code{"common"} or \code{"gradient"}.
 #' @param maxit Integer.
 #' @param verbose Logical.
+#' @param penalty_weights Optional coordinate weights (see \code{fit_nhpp}).
+#' @param lambda_grid Optional user grid of base penalties.
+#' @param grad_tol KKT tolerance (see \code{fit_nhpp}).
 #'
-#' @return Named numeric vector \code{c(mu=, sigma=, xi=)} of selected lambdas.
+#' @return A list with \code{lambda} (named vector \code{c(mu=, sigma=, xi=)}),
+#'   \code{par} (smooth path solution at the selected lambda), and
+#'   \code{path} (a list with a data frame \code{table} and a coefficient
+#'   matrix \code{coef}).
 #'
-#' @keywords internal
+#' @noRd
 .select_lambda_bic <- function(dm, y, threshold, alpha,
                                penalize_shape, init,
-                               obs_per_year = 365.25,
-                               active_tol   = 1e-2,
-                               lambda_scaling = c("gradient", "common"),
-                               maxit        = 5000L,
-                               verbose      = TRUE) {
+                               obs_per_year    = 365.25,
+                               active_tol      = 1e-2,
+                               lambda_scaling  = c("common", "gradient"),
+                               maxit           = 5000L,
+                               verbose         = TRUE,
+                               penalty_weights = NULL,
+                               lambda_grid     = NULL,
+                               grad_tol        = 5e-4) {
 
   lambda_scaling <- match.arg(lambda_scaling)
 
   p_mu  <- ncol(dm$X_mu)
   p_sig <- ncol(dm$X_sigma)
-  p_xi  <- ncol(dm$X_xi)
   n_exc <- sum(y > threshold, na.rm = TRUE)
 
-  pen_idx_all <- c(
-    dm$idx_pen_mu,
-    p_mu + dm$idx_pen_sigma,
-    if (penalize_shape) p_mu + p_sig + dm$idx_pen_xi else integer(0L)
-  )
+  pen_idx_all <- .penalized_index(dm, penalize_shape)
 
   ratio_sigma <- ratio_xi <- 1
   if (lambda_scaling == "gradient") {
@@ -81,21 +87,26 @@
       lambda_scaling, ratio_sigma, ratio_xi
     ))
 
+  block_lambda <- function(lam_base)
+    c(mu = lam_base, sigma = lam_base * ratio_sigma, xi = lam_base * ratio_xi)
+
   .bic_at <- function(lam_base, init_par) {
-    lam <- c(mu    = lam_base,
-             sigma = lam_base * ratio_sigma,
-             xi    = lam_base * ratio_xi)
+    lam <- block_lambda(lam_base)
     res <- .fit_at_lambda(dm, y, threshold,
-                          lambda         = lam,
-                          alpha          = alpha,
-                          penalize_shape = penalize_shape,
-                          init           = init_par,
-                          maxit          = maxit,
-                          calc_hessian   = FALSE,
-                          obs_per_year   = obs_per_year)
+                          lambda          = lam,
+                          alpha           = alpha,
+                          penalize_shape  = penalize_shape,
+                          init            = init_par,
+                          maxit           = maxit,
+                          calc_hessian    = FALSE,
+                          obs_per_year    = obs_per_year,
+                          penalty_weights = penalty_weights,
+                          grad_tol        = grad_tol,
+                          active_tol      = active_tol)
     if (!res$converged || !is.finite(res$nllh_raw))
       return(list(bic = NA_real_, par_smooth = init_par,
-                  par_oper = init_par, lam = lam))
+                  par_oper = init_par, k_active = NA_integer_,
+                  converged = FALSE))
 
     par_smooth <- res$par
     par_oper   <- par_smooth
@@ -110,96 +121,113 @@
                          obs_per_year = obs_per_year)
     if (!is.finite(nllh_oper) || nllh_oper >= 1e9)
       return(list(bic = NA_real_, par_smooth = init_par,
-                  par_oper = init_par, lam = lam))
+                  par_oper = init_par, k_active = NA_integer_,
+                  converged = FALSE))
     k_active <- sum(par_oper[pen_idx_all] != 0) +
       (length(par_oper) - length(pen_idx_all))
-    bic <- 2 * nllh_oper + k_active * log(n_exc)
-    list(bic = bic, par_smooth = par_smooth,
-         par_oper = par_oper, lam = lam)
+    list(bic = 2 * nllh_oper + k_active * log(n_exc),
+         par_smooth = par_smooth, par_oper = par_oper,
+         k_active = as.integer(k_active), converged = TRUE)
   }
 
-  # Phase 1: coarse grid
-  grid_coarse <- exp(seq(log(2000), log(0.05), length.out = 40L))
-  bic_coarse  <- rep(NA_real_, length(grid_coarse))
-  par_coarse  <- vector("list", length(grid_coarse))
-  cur_init    <- init
+  rows <- list()
+  record <- function(lam_base, out, phase) {
+    rows[[length(rows) + 1L]] <<- list(
+      lambda = lam_base, phase = phase, bic = out$bic,
+      k_active = out$k_active, converged = out$converged,
+      par_smooth = out$par_smooth, par_oper = out$par_oper)
+  }
 
-  if (verbose) message("  Phase 1: coarse grid (40 points)...")
-
-  for (i in seq_along(grid_coarse)) {
-    out <- .bic_at(grid_coarse[i], cur_init)
-    bic_coarse[i]  <- out$bic
-    par_coarse[[i]] <- out$par_smooth
-    if (!is.na(out$bic)) cur_init <- out$par_smooth
-
-    if (verbose)
-      message(sprintf("    [%2d/40] lambda=%.4f  BIC=%.2f",
-                      i, grid_coarse[i],
-                      if (is.na(out$bic)) NA else round(out$bic, 2)))
-
-    # Early stopping: valley found and BIC rising consistently
-    if (i >= 5L) {
-      recent <- bic_coarse[max(1L, i - 3L):i]
-      recent <- recent[!is.na(recent)]
-      if (length(recent) >= 3L &&
-          all(diff(recent) > 0) &&
-          !is.na(out$bic) &&
-          out$bic > min(bic_coarse[1L:(i - 1L)], na.rm = TRUE) + 50) {
-        if (verbose) message("  -> Valley found, stopping coarse search early.")
-        break
+  run_grid <- function(grid, start, phase, early_stop) {
+    bic <- rep(NA_real_, length(grid))
+    pars <- vector("list", length(grid))
+    cur <- start
+    for (i in seq_along(grid)) {
+      out <- .bic_at(grid[i], cur)
+      bic[i] <- out$bic
+      pars[[i]] <- out$par_smooth
+      record(grid[i], out, phase)
+      if (!is.na(out$bic)) cur <- out$par_smooth
+      if (verbose)
+        message(sprintf("    [%2d/%d] lambda=%.5f  BIC=%.2f",
+                        i, length(grid), grid[i],
+                        if (is.na(out$bic)) NA else round(out$bic, 2)))
+      # Early stopping: valley found and BIC rising consistently
+      if (early_stop && i >= 5L) {
+        recent <- bic[max(1L, i - 3L):i]
+        recent <- recent[!is.na(recent)]
+        if (length(recent) >= 3L &&
+            all(diff(recent) > 0) &&
+            !is.na(out$bic) &&
+            out$bic > min(bic[1L:(i - 1L)], na.rm = TRUE) + 50) {
+          if (verbose) message("  -> Valley found, stopping coarse search early.")
+          break
+        }
       }
+    }
+    list(bic = bic, pars = pars)
+  }
+
+  if (!is.null(lambda_grid)) {
+    grid <- sort(unique(lambda_grid), decreasing = TRUE)
+    if (verbose) message(sprintf("  User grid (%d points)...", length(grid)))
+    g <- run_grid(grid, init, "user", early_stop = FALSE)
+    valid <- which(!is.na(g$bic))
+    if (length(valid) == 0L)
+      stop(".select_lambda_bic: all grid fits failed.")
+    best <- valid[which.min(g$bic[valid])]
+    lam_best <- grid[best]
+    par_best <- g$pars[[best]]
+  } else {
+    # Phase 1: coarse grid
+    grid_coarse <- exp(seq(log(2000), log(0.05), length.out = 40L))
+    if (verbose) message("  Phase 1: coarse grid (40 points)...")
+    gc <- run_grid(grid_coarse, init, "coarse", early_stop = TRUE)
+    valid_c <- which(!is.na(gc$bic))
+    if (length(valid_c) == 0L)
+      stop(".select_lambda_bic: all coarse grid fits failed.")
+    best_c   <- valid_c[which.min(gc$bic[valid_c])]
+    lam_best <- grid_coarse[best_c]
+    par_best <- gc$pars[[best_c]]
+
+    # Phase 2: fine grid bracketing the coarse optimum
+    idx_lo    <- max(min(valid_c), best_c - 2L)
+    idx_hi    <- min(max(valid_c), best_c + 2L)
+    grid_fine <- exp(seq(log(grid_coarse[idx_lo]), log(grid_coarse[idx_hi]),
+                         length.out = 25L))
+    if (verbose)
+      message(sprintf(
+        "  Phase 2: fine grid (25 points) around lambda=%.4f...", lam_best
+      ))
+    gf <- run_grid(grid_fine, par_best, "fine", early_stop = FALSE)
+    valid_f <- which(!is.na(gf$bic))
+    if (length(valid_f) > 0L &&
+        min(gf$bic[valid_f]) < gc$bic[best_c]) {
+      best_f   <- valid_f[which.min(gf$bic[valid_f])]
+      lam_best <- grid_fine[best_f]
+      par_best <- gf$pars[[best_f]]
+      if (verbose)
+        message(sprintf("  Fine search improved: lambda=%.5f", lam_best))
+    } else if (verbose) {
+      message(sprintf("  Coarse optimum confirmed: lambda=%.5f", lam_best))
     }
   }
 
-  valid_c <- which(!is.na(bic_coarse))
-  if (length(valid_c) == 0L)
-    stop(".select_lambda_bic: all coarse grid fits failed.")
+  table <- data.frame(
+    lambda    = vapply(rows, `[[`, numeric(1L), "lambda"),
+    phase     = vapply(rows, `[[`, character(1L), "phase"),
+    bic       = vapply(rows, `[[`, numeric(1L), "bic"),
+    k_active  = vapply(rows, function(r) as.integer(r$k_active), integer(1L)),
+    converged = vapply(rows, `[[`, logical(1L), "converged"),
+    stringsAsFactors = FALSE
+  )
+  table$selected <- FALSE
+  cand <- which(table$lambda == lam_best & !is.na(table$bic))
+  table$selected[cand[which.min(table$bic[cand])]] <- TRUE
+  coef_path <- do.call(rbind, lapply(rows, `[[`, "par_oper"))
+  colnames(coef_path) <- names(init)
 
-  best_c   <- valid_c[which.min(bic_coarse[valid_c])]
-  lam_best <- grid_coarse[best_c]
-
-  # Phase 2: fine grid bracketing the coarse optimum
-  idx_lo     <- max(min(valid_c), best_c - 2L)
-  idx_hi     <- min(max(valid_c), best_c + 2L)
-  lam_lo     <- grid_coarse[idx_hi]
-  lam_hi     <- grid_coarse[idx_lo]
-  grid_fine  <- exp(seq(log(lam_hi), log(lam_lo), length.out = 25L))
-  bic_fine   <- rep(NA_real_, length(grid_fine))
-  par_fine   <- vector("list", length(grid_fine))
-  cur_init   <- par_coarse[[best_c]]
-
-  if (verbose)
-    message(sprintf(
-      "  Phase 2: fine grid (25 points) around lambda=%.4f...", lam_best
-    ))
-
-  for (i in seq_along(grid_fine)) {
-    out <- .bic_at(grid_fine[i], cur_init)
-    bic_fine[i]  <- out$bic
-    par_fine[[i]] <- out$par_smooth
-    if (!is.na(out$bic)) cur_init <- out$par_smooth
-
-    if (verbose)
-      message(sprintf("    [%2d/25] lambda=%.5f  BIC=%.2f",
-                      i, grid_fine[i],
-                      if (is.na(out$bic)) NA else round(out$bic, 2)))
-  }
-
-  valid_f <- which(!is.na(bic_fine))
-
-  if (length(valid_f) > 0L &&
-      min(bic_fine[valid_f]) < bic_coarse[best_c]) {
-    best_f   <- valid_f[which.min(bic_fine[valid_f])]
-    lam_best <- grid_fine[best_f]
-    if (verbose)
-      message(sprintf("  Fine search improved: lambda=%.5f", lam_best))
-  } else {
-    if (verbose)
-      message(sprintf("  Coarse optimum confirmed: lambda=%.5f", lam_best))
-  }
-
-  # Return block-calibrated lambda vector
-  c(mu    = lam_best,
-    sigma = lam_best * ratio_sigma,
-    xi    = lam_best * ratio_xi)
+  list(lambda = block_lambda(lam_best),
+       par    = par_best,
+       path   = list(table = table, coef = coef_path))
 }

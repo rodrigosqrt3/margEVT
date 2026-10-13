@@ -1,12 +1,32 @@
 citHeader("To cite margEVT in publications use:")
 
 bibentry(
+  bibtype     = "Manual",
+  title       = "{margEVT}: Regularized Point Processes and Stochastic Marginalization for Extremes",
+  author      = person("Rodrigo Fonseca", "Villa"),
+  year        = "2026",
+  note        = "R package version 0.4.0",
+  url         = "https://github.com/rodrigosqrt3/margEVT",
+  textVersion = paste(
+    "Villa, R. F. (2026). margEVT: Regularized Point Processes and",
+    "Stochastic Marginalization for Extremes. R package version 0.4.0.",
+    "https://github.com/rodrigosqrt3/margEVT"
+  )
+)
+
+bibentry(
   bibtype     = "MastersThesis",
   title       = "Regularized Poisson Point Process Models and Stochastic Marginalization for Return-Level Inference under Covariate-Driven Extremes",
   author      = person("Rodrigo Fonseca", "Villa"),
   school      = "Instituto de Matemática e Estatística, Universidade Federal do Rio Grande do Sul",
   year        = "2026",
   address     = "Porto Alegre, Brazil",
-  note        = "Unpublished dissertation. Advisor: Flavio Ziegelmann.",
-  textVersion = "Villa, R. F. (2026). Regularized Poisson Point Process Models and Stochastic Marginalization for Return-Level Inference under Covariate-Driven Extremes (Master's dissertation, Instituto de Matemática e Estatística, Universidade Federal do Rio Grande do Sul, Porto Alegre, Brazil. Advisor: Flavio Ziegelmann)."
+  note        = "Advisor: Flavio A. Ziegelmann",
+  textVersion = paste(
+    "Villa, R. F. (2026). Regularized Poisson Point Process Models and",
+    "Stochastic Marginalization for Return-Level Inference under",
+    "Covariate-Driven Extremes. Master's dissertation, Instituto de",
+    "Matemática e Estatística, Universidade Federal do Rio Grande do Sul,",
+    "Porto Alegre, Brazil. Advisor: Flavio A. Ziegelmann."
+  )
 )

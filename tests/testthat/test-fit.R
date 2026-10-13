@@ -234,8 +234,14 @@ test_that(".fit_at_lambda returns a failed result when both optimizers error", {
 
 test_that("fit_nhpp throws warning on < 5 exceedances", {
   df_few <- data.frame(y = c(1, 2, 3, 4.5, 4.5, 4.5), x = rnorm(6))
+  # With three exceedances the fit is degenerate; only the small-sample
+  # warning is under test here, so the convergence warning is muffled.
   expect_warning(
-    fit_nhpp(df_few, threshold = 4, penalty = "none", verbose = TRUE),
+    withCallingHandlers(
+      fit_nhpp(df_few, threshold = 4, penalty = "none", verbose = TRUE),
+      warning = function(w)
+        if (grepl("did not converge", conditionMessage(w)))
+          invokeRestart("muffleWarning")),
     regexp = "fewer than 5 exceedances"
   )
 })

@@ -9,11 +9,19 @@ n_exceedances(fit, y)
 \arguments{
 \item{fit}{An \code{nhpp_fit} object.}
 
-\item{y}{Numeric vector of observations used to fit the model.}
+\item{y}{Numeric vector of observations. If missing, the series stored in
+the fitted object is used.}
 }
 \value{
 Integer. Number of observations exceeding the threshold.
 }
 \description{
 Extract the number of exceedances from a fitted model
+}
+\examples{
+set.seed(1)
+df <- data.frame(y = c(rexp(300), runif(30, 5, 10)))
+fit <- fit_nhpp(df, threshold = 4, penalty = "none", verbose = FALSE)
+n_exceedances(fit)
+
 }

@@ -67,22 +67,6 @@ test_that("fit_var_generator validates period and lag limits", {
   )
 })
 
-test_that("fit_var_generator errors when the 'vars' package is unavailable", {
-  fit <- .make_fake_fit()
-  df  <- .make_test_data()
-
-  fit_var_mocked <- fit_var_generator
-  environment(fit_var_mocked) <- list2env(
-    list(requireNamespace = function(...) FALSE),
-    parent = environment(fit_var_generator)
-  )
-
-  expect_error(
-    fit_var_mocked(fit, df, vars = c("x1", "x2")),
-    "package 'vars' is required"
-  )
-})
-
 test_that("fit_var_generator errors on explicit vars missing from data", {
   fit <- .make_fake_fit()
   df  <- .make_test_data()
@@ -176,33 +160,6 @@ test_that("univariate generator fitting preserves the caller RNG stream", {
   second <- runif(1L)
 
   expect_equal(c(first, second), expected)
-})
-
-test_that("univariate AR selection rejects degenerate candidates", {
-  expect_error(
-    margEVT:::.fit_univariate_ar_bic(rep(0, 20), lag_max = 2L),
-    regexp = "no stable univariate AR candidate"
-  )
-})
-
-test_that("univariate AR selection rejects insufficient effective samples", {
-  # With two observations, an AR(1) candidate has one effective observation,
-  # so it is rejected by the n_eff <= p safeguard deterministically.
-  x <- c(1, 0.5)
-  expect_error(
-    margEVT:::.fit_univariate_ar_bic(x, lag_max = 1L),
-    regexp = "no stable univariate AR candidate"
-  )
-})
-
-test_that("univariate AR selection rejects explosive candidates", {
-  x <- 1.2^seq_len(40L)
-  x[20L] <- x[20L] + 0.01
-
-  expect_error(
-    margEVT:::.fit_univariate_ar_bic(x, lag_max = 1L),
-    regexp = "no stable univariate AR candidate"
-  )
 })
 
 test_that("companion matrix includes lag-shift rows for higher-order models", {

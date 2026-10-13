@@ -184,3 +184,26 @@ test_that("bic selection stops early when valley is found (Mocked via testthat 3
     regexp = "Valley found, stopping coarse search early"
   )
 })
+
+test_that("gradient lambda scaling calibrates block penalties", {
+  df <- make_select_df()
+  grid <- c(20, 5, 1)
+  fit_all <- fit_nhpp(df, threshold = 4, loc_vars = "x", scale_vars = "x",
+                      shape_vars = "z", penalty = "lasso", lambda = "bic",
+                      lambda_scaling = "gradient", lambda_grid = grid,
+                      verbose = FALSE)
+  expect_identical(fit_all$lambda_scaling, "gradient")
+  expect_false(isTRUE(all.equal(unname(fit_all$lambda["mu"]),
+                                unname(fit_all$lambda["sigma"]))))
+  # No penalized location coefficients: the location score scale falls back
+  # to one, and missing blocks inherit the location scale.
+  fit_noloc <- fit_nhpp(df, threshold = 4, loc_vars = NULL, scale_vars = "x",
+                        penalty = "lasso", lambda = "bic",
+                        lambda_scaling = "gradient", lambda_grid = grid,
+                        verbose = FALSE)
+  expect_equal(unname(fit_noloc$lambda["xi"]), unname(fit_noloc$lambda["mu"]))
+  fit_loc <- fit_nhpp(df, threshold = 4, loc_vars = "x", penalty = "lasso",
+                      lambda = "bic", lambda_scaling = "gradient",
+                      lambda_grid = grid, verbose = FALSE)
+  expect_equal(unname(fit_loc$lambda), rep(unname(fit_loc$lambda["mu"]), 3L))
+})

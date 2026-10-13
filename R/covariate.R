@@ -7,17 +7,72 @@
 # time point (typically 365 rows for one year of daily data) containing
 # all columns the model needs.
 #
-# No variable names are hardcoded. Interactions must be declared explicitly
-# by the user via the `interactions` argument.
+# Seasonal harmonics are recognised by name: cos<k>, sin<k>, and the legacy
+# spelling sen<k> (k = 1, 2, ...). They are evaluated at positions
+# t = 1, ..., n_obs within the year, using the same convention as
+# seasonal_harmonics().
 # =============================================================================
+
+# Value of one named harmonic column at time positions `t`.
+.harmonic_column <- function(name, t, period) {
+  k <- as.integer(sub("^(cos|sin|sen)", "", name))
+  if (startsWith(name, "cos")) cos(2 * pi * k * t / period) else
+    sin(2 * pi * k * t / period)
+}
+
+#' Seasonal Fourier harmonics
+#'
+#' Builds the seasonal harmonic columns used by \code{margEVT}. The
+#' \eqn{k}-th pair is \eqn{\cos(2\pi k t / P)} and \eqn{\sin(2\pi k t / P)},
+#' where \eqn{t} is the position of the observation within the year and
+#' \eqn{P} is the seasonal period. Using this function to build the fitting
+#' data guarantees that \code{\link{build_cov_annual}} reconstructs the same
+#' seasonal cycle during marginalization, where positions run from 1 to
+#' \code{n_obs} within each simulated or resampled year.
+#'
+#' @param t Numeric vector of within-year positions (e.g. day of year).
+#' @param period Positive seasonal period. Default \code{365.25}.
+#' @param n_harmonics Positive integer number of harmonic pairs. Default 2.
+#' @param sine Prefix of the sine columns: \code{"sen"} (default, the
+#'   historical margEVT naming) or \code{"sin"}.
+#'
+#' @return A data frame with columns \code{cos1}, \code{sen1} (or
+#'   \code{sin1}), ..., one row per element of \code{t}.
+#'
+#' @examples
+#' h <- seasonal_harmonics(1:365, period = 365.25)
+#' head(h)
+#' names(seasonal_harmonics(1:52, period = 52, n_harmonics = 3, sine = "sin"))
+#'
+#' @export
+seasonal_harmonics <- function(t, period = 365.25, n_harmonics = 2L,
+                               sine = c("sen", "sin")) {
+  sine <- match.arg(sine)
+  if (!is.numeric(t) || any(!is.finite(t)))
+    stop("seasonal_harmonics: `t` must be a finite numeric vector.")
+  if (!is.numeric(period) || length(period) != 1L || !is.finite(period) ||
+      period <= 0)
+    stop("seasonal_harmonics: `period` must be a single positive number.")
+  if (!is.numeric(n_harmonics) || length(n_harmonics) != 1L ||
+      !is.finite(n_harmonics) || n_harmonics < 1)
+    stop("seasonal_harmonics: `n_harmonics` must be a positive integer.")
+  out <- list()
+  for (k in seq_len(as.integer(n_harmonics))) {
+    out[[paste0("cos", k)]] <- cos(2 * pi * k * t / period)
+    out[[paste0(sine, k)]]  <- sin(2 * pi * k * t / period)
+  }
+  as.data.frame(out)
+}
 
 #' Build a covariate data frame for marginalization
 #'
 #' Constructs a data frame with \code{n_obs} rows containing all columns
-#' required by a fitted \code{nhpp_fit} model. Seasonality columns
-#' (\code{cos1}, \code{sen1}, \code{cos2}, \code{sen2}) are computed
-#' automatically using \code{period}. Any other required column is filled
-#' from \code{cov_vals}, or set to zero with a warning if absent.
+#' required by a fitted \code{nhpp_fit} model. The default seasonal columns
+#' (\code{cos1}, \code{sen1}, \code{cos2}, \code{sen2}) and any other
+#' harmonic column required by the model (\code{cos<k>}, \code{sin<k>},
+#' \code{sen<k>}) are computed automatically with \code{period} (see
+#' \code{\link{seasonal_harmonics}}). Any other required column is filled from
+#' \code{cov_vals}, or set to zero with a warning if absent.
 #'
 #' @param fit An \code{nhpp_fit} object.
 #' @param cov_vals Named list of covariate values. Each element is either
@@ -35,6 +90,16 @@
 #'
 #' @return A data frame with \code{n_obs} rows and all columns required
 #'   by \code{fit}.
+#'
+#' @examples
+#' set.seed(1)
+#' n <- 3650
+#' df <- cbind(data.frame(x = rnorm(n)), seasonal_harmonics(rep(1:365, 10)))
+#' df$y <- 10 + df$x + 3 * df$cos1 + rexp(n, 1 / 3)
+#' fit <- fit_nhpp(df, threshold = 20, loc_vars = c("x", "cos1", "sen1"),
+#'                 free_vars = c("cos1", "sen1"), penalty = "none",
+#'                 verbose = FALSE)
+#' head(build_cov_annual(fit, list(x = 0.5), n_obs = 365))
 #'
 #' @export
 build_cov_annual <- function(fit, cov_vals = list(), n_obs = NULL,
@@ -68,14 +133,6 @@ build_cov_annual <- function(fit, cov_vals = list(), n_obs = NULL,
       !is.finite(period) || period <= 0)
     stop("build_cov_annual: `period` must be a single positive numeric value.")
 
-  t_grid <- seq_len(n_obs)
-  df <- data.frame(
-    cos1 = cos(2 * pi * t_grid / period),
-    sen1 = sin(2 * pi * t_grid / period),
-    cos2 = cos(4 * pi * t_grid / period),
-    sen2 = sin(4 * pi * t_grid / period)
-  )
-
   dm        <- fit$dm
   need_cols <- unique(c(
     colnames(dm$X_mu),
@@ -83,6 +140,13 @@ build_cov_annual <- function(fit, cov_vals = list(), n_obs = NULL,
     colnames(dm$X_xi)
   ))
   need_cols <- need_cols[need_cols != "(Intercept)"]
+
+  t_grid <- seq_len(n_obs)
+  harmonic_cols <- unique(c("cos1", "sen1", "cos2", "sen2",
+                            need_cols[.is_harmonic(need_cols)]))
+  df <- as.data.frame(stats::setNames(
+    lapply(harmonic_cols, .harmonic_column, t = t_grid, period = period),
+    harmonic_cols))
 
   interaction_output_cols <- names(interactions)
 
@@ -140,8 +204,9 @@ build_cov_annual <- function(fit, cov_vals = list(), n_obs = NULL,
 #' Extract names of non-seasonal covariates from a fitted model
 #'
 #' Returns the covariate names that appear in the model with a non-negligible
-#' coefficient — i.e. those that actually affect the parameters and need to
-#' be supplied during marginalization.
+#' coefficient - i.e. those that actually affect the parameters and need to
+#' be supplied during marginalization. Seasonal harmonic columns
+#' (\code{cos<k>}, \code{sin<k>}, \code{sen<k>}) are always excluded.
 #'
 #' @param fit An \code{nhpp_fit} object.
 #' @param free_cols Character vector of column names to always exclude from
@@ -154,18 +219,20 @@ build_cov_annual <- function(fit, cov_vals = list(), n_obs = NULL,
 #' @return Character vector of active covariate names, or \code{NULL} if
 #'   the model has no active non-seasonal covariates.
 #'
+#' @examples
+#' set.seed(1)
+#' df <- data.frame(x = rnorm(2000), z = rnorm(2000))
+#' df$y <- 10 + 2 * df$x + rexp(2000, 1 / 3)
+#' fit <- fit_nhpp(df, threshold = 18, loc_vars = c("x", "z"),
+#'                 penalty = "lasso", lambda = 5, verbose = FALSE)
+#' active_covariates(fit)
+#'
 #' @export
 active_covariates <- function(fit, free_cols = NULL, tol = NULL) {
 
   if (!inherits(fit, "nhpp_fit"))
     stop("active_covariates: `fit` must be an nhpp_fit object.")
-  tol <- if (is.null(tol)) {
-    if (is.null(fit$active_tol)) 1e-2 else fit$active_tol
-  } else tol
-  if (!is.numeric(tol) || length(tol) != 1L || !is.finite(tol) || tol <= 0)
-    stop("active_covariates: `tol` must be a single positive numeric value.")
-
-  always_exclude <- c("(Intercept)", "cos1", "sen1", "cos2", "sen2", free_cols)
+  tol <- .fit_tol(fit, tol, "active_covariates")
 
   dm  <- fit$dm
   par <- fit$par
@@ -174,26 +241,18 @@ active_covariates <- function(fit, free_cols = NULL, tol = NULL) {
   p_sig <- ncol(dm$X_sigma)
   p_xi  <- ncol(dm$X_xi)
 
-  beta_mu  <- par[seq_len(p_mu)]
-  beta_sig <- par[p_mu + seq_len(p_sig)]
-  beta_xi  <- par[p_mu + p_sig + seq_len(p_xi)]
+  beta <- list(
+    stats::setNames(par[seq_len(p_mu)], colnames(dm$X_mu)),
+    stats::setNames(par[p_mu + seq_len(p_sig)], colnames(dm$X_sigma)),
+    stats::setNames(par[p_mu + p_sig + seq_len(p_xi)], colnames(dm$X_xi))
+  )
 
-  names(beta_mu)  <- colnames(dm$X_mu)
-  names(beta_sig) <- colnames(dm$X_sigma)
-  names(beta_xi)  <- colnames(dm$X_xi)
-
-  # Collect all candidate column names across all three blocks
-  cn_mu  <- colnames(dm$X_mu) [!colnames(dm$X_mu)  %in% always_exclude]
-  cn_sig <- colnames(dm$X_sigma)[!colnames(dm$X_sigma) %in% always_exclude]
-  cn_xi  <- colnames(dm$X_xi) [!colnames(dm$X_xi)  %in% always_exclude]
-
-  # Keep only those with a non-negligible coefficient
   active <- character(0L)
-  for (cn in cn_mu)  if (abs(beta_mu[cn])  > tol) active <- c(active, cn)
-  for (cn in cn_sig) if (cn %in% names(beta_sig) &&
-                         abs(beta_sig[cn]) > tol) active <- c(active, cn)
-  for (cn in cn_xi)  if (cn %in% names(beta_xi)  &&
-                         abs(beta_xi[cn])  > tol) active <- c(active, cn)
+  for (b in beta) {
+    cn <- names(b)
+    cn <- cn[cn != "(Intercept)" & !.is_harmonic(cn) & !cn %in% free_cols]
+    active <- c(active, cn[abs(b[cn]) > tol])
+  }
 
   active <- unique(active)
   if (length(active) == 0L) NULL else active

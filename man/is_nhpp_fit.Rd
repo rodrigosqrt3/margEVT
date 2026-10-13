@@ -15,3 +15,6 @@ Logical.
 \description{
 Check if an object is an nhpp_fit
 }
+\examples{
+is_nhpp_fit(list())
+}
