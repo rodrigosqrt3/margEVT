@@ -21,7 +21,9 @@ test_that("lambda=bic returns a converged fit", {
                     penalty  = "lasso",
                     lambda   = "bic",
                     verbose  = TRUE),
-    regexp = "Fine search improved"
+    # The BIC is flat over a range of lambdas here, so which branch is taken
+    # depends on platform-specific rounding.
+    regexp = "Fine search improved|Coarse optimum confirmed"
   )
   expect_s3_class(fit, "nhpp_fit")
   expect_true(fit$converged)
@@ -183,6 +185,35 @@ test_that("bic selection stops early when valley is found (Mocked via testthat 3
     ),
     regexp = "Valley found, stopping coarse search early"
   )
+})
+
+test_that("the fine grid improves on the coarse optimum (Mocked)", {
+  s <- make_select_df()
+  dm <- margEVT:::build_design_matrices(s, loc_vars = "x", scale_vars = NULL,
+                                        shape_vars = NULL, free_vars = NULL)
+  init <- rep(0, ncol(dm$X_mu) + ncol(dm$X_sigma) + ncol(dm$X_xi))
+
+  # The fitted vector encodes log(lambda); the likelihood is minimized at
+  # lambda = 3.3, which lies strictly between two coarse grid points.
+  testthat::local_mocked_bindings(
+    .fit_at_lambda = function(..., lambda) list(
+      converged = TRUE,
+      par = rep(log(lambda[1L]), length(init)),
+      nllh_pen = 0, nllh_raw = 0, hessian = NULL
+    ),
+    pp_nllh = function(par, ...) 1000 * (unname(par[1L]) - log(3.3))^2
+  )
+
+  expect_message(
+    sel <- margEVT:::.select_lambda_bic(
+      dm = dm, y = s$y, threshold = 4, alpha = 1,
+      penalize_shape = TRUE, init = init, verbose = TRUE
+    ),
+    regexp = "Fine search improved"
+  )
+  # strictly between the neighbouring coarse points 2.944 and 3.864
+  expect_gt(unname(sel$lambda["mu"]), 2.95)
+  expect_lt(unname(sel$lambda["mu"]), 3.86)
 })
 
 test_that("gradient lambda scaling calibrates block penalties", {
