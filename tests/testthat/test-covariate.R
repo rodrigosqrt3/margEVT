@@ -61,6 +61,18 @@ test_that("missing cov_vals fills with zero and warns", {
   expect_true(all(df$mei == 0))
 })
 
+test_that("missing covariates with zero operational coefficients are silent", {
+  fit <- make_fit_with_cov()
+  fit$par_oper <- fit$par
+  fit$par_oper["mu.tsa"] <- 0
+  expect_silent(
+    df <- build_cov_annual(fit, cov_vals = list(mei = 0), n_obs = 365L)
+  )
+  expect_true(all(df$tsa == 0))
+  expect_warning(build_cov_annual(fit, cov_vals = list(tsa = 0), n_obs = 365L),
+                 regexp = "'mei'")
+})
+
 test_that("interactions are computed correctly", {
   fit  <- make_fit_with_cov()
   ints <- list(mei_x_tsa = c("mei", "tsa"))
@@ -237,4 +249,13 @@ test_that("build_cov_annual generates any harmonic column the model needs", {
   expect_equal(cov$cos3, cos(2 * pi * 3 * (1:365) / 365.25))
   expect_equal(cov$sin3, sin(2 * pi * 3 * (1:365) / 365.25))
   expect_identical(active_covariates(fit, tol = 1e-8), "x")
+})
+
+test_that("seasonal_harmonics validates its inputs", {
+  expect_error(seasonal_harmonics(c(1, NA)), "`t`")
+  expect_error(seasonal_harmonics(1:3, period = 0), "period")
+  expect_error(seasonal_harmonics(1:3, n_harmonics = 0), "n_harmonics")
+  h <- seasonal_harmonics(1:4, period = 4, n_harmonics = 1L, sine = "sin")
+  expect_equal(h$cos1, cos(2 * pi * (1:4) / 4))
+  expect_equal(h$sin1, sin(2 * pi * (1:4) / 4))
 })

@@ -238,3 +238,45 @@ test_that("gradient lambda scaling calibrates block penalties", {
                       lambda_grid = grid, verbose = FALSE)
   expect_equal(unname(fit_loc$lambda), rep(unname(fit_loc$lambda["mu"]), 3L))
 })
+
+# -----------------------------------------------------------------------------
+# Path solution and user grids
+# -----------------------------------------------------------------------------
+
+test_that("BIC fit returns the path solution scored by the criterion", {
+  df <- make_pen_df()
+  fit <- fit_nhpp(df, threshold = 16, loc_vars = c("x1", "x2", "x3"),
+                  penalty = "lasso", lambda = "bic", verbose = FALSE)
+  expect_true(fit$converged)
+  tab <- fit$path$table
+  expect_true(all(c("lambda", "phase", "bic", "k_active", "converged",
+                    "selected") %in% names(tab)))
+  expect_equal(sum(tab$selected), 1L)
+  sel <- which(tab$selected)
+  expect_equal(unname(fit$par_oper), unname(fit$path$coef[sel, ]),
+               tolerance = 1e-5)
+  expect_equal(bic_nhpp(fit), tab$bic[sel], tolerance = 1e-6)
+  expect_equal(unname(fit$lambda["mu"]), tab$lambda[sel])
+})
+
+test_that("user lambda_grid is evaluated in one pass and validated", {
+  df <- make_pen_df()
+  fit <- suppressMessages(
+    fit_nhpp(df, threshold = 16, loc_vars = c("x1", "x2"),
+             penalty = "lasso", lambda = "bic",
+             lambda_grid = c(1, 50, 5), verbose = TRUE))
+  expect_identical(unique(fit$path$table$phase), "user")
+  expect_equal(fit$path$table$lambda, c(50, 5, 1))
+  expect_error(fit_nhpp(df, threshold = 16, loc_vars = "x1",
+                        penalty = "lasso", lambda_grid = 1, verbose = FALSE),
+               "lambda_grid")
+  dm <- build_design_matrices(df, loc_vars = "x1")
+  testthat::local_mocked_bindings(
+    .fit_at_lambda = function(...) list(converged = FALSE, par = NULL,
+                                        nllh_pen = NA, nllh_raw = NA)
+  )
+  expect_error(
+    margEVT:::.select_lambda_bic(dm, df$y, 16, 1, TRUE, c(15, 0, 1, 0),
+                                 lambda_grid = c(2, 1), verbose = FALSE),
+    "all grid fits failed")
+})

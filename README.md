@@ -2,7 +2,7 @@
 
 [![CRAN status](https://www.r-pkg.org/badges/version/margEVT)](https://CRAN.R-project.org/package=margEVT) &nbsp; [![R-CMD-check](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml/badge.svg)](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml) &nbsp; [![codecov](https://codecov.io/gh/rodrigosqrt3/margEVT/branch/main/graph/badge.svg)](https://app.codecov.io/gh/rodrigosqrt3/margEVT)
 
-`margEVT` is an R package for non-stationary extreme value analysis under covariate-driven regimes. It couples a covariate-driven Non-Homogeneous Poisson Process (NHPP) with Elastic-Net penalized maximum likelihood and stochastically marginalized return-level estimation.
+`margEVT` is an R package for non-stationary extreme value analysis under covariate-driven regimes. It couples a covariate-driven Non-Homogeneous Poisson Process (NHPP) with (adaptive) elastic-net penalized maximum likelihood and stochastically marginalized return-level estimation, with conditional bootstrap intervals and walk-forward validation.
 
 ---
 
@@ -23,24 +23,25 @@ $$\log(\sigma(t)) = \phi_0 + \sum_{j=1}^{J} \phi_j x_{j,t}$$
 
 $$\xi(t) = \xi_0 + \sum_{l=1}^{L} \xi_l x_{l,t}$$
 
-The logarithmic parameterization of $\sigma(t) = \exp(\phi(t))$ guarantees positivity.
+The logarithmic parameterization of $\sigma(t) = \exp(\phi(t))$ guarantees positivity. The shape is restricted to $\xi(t) \ge -1/2$ by default (`shape_lower`), the region where the maximum likelihood estimator is regular (Smith, 1985); fits at the bound are handled by an active-set solver.
 
-### 1.2 Elastic-Net Regularization and Optimization
-In high-dimensional covariate settings, parameter estimation is conducted via penalized maximum likelihood. The objective function minimizes the negative log-likelihood $\ell(\boldsymbol{\theta})$ subject to an Elastic-Net penalty:
+### 1.2 Penalized Estimation and Optimization
+In high-dimensional covariate settings, parameter estimation is conducted via penalized maximum likelihood. The objective function minimizes the negative log-likelihood $\ell(\boldsymbol{\theta})$ subject to a weighted elastic-net penalty:
 
-$$Q(\boldsymbol{\theta}; \lambda, \alpha) = -\ell(\boldsymbol{\theta}) + \lambda \sum_{k \in \mathcal{P}} \left[ \alpha \sqrt{\theta_k^2 + \varepsilon} + \left( \frac{1 - \alpha}{2} \right) \theta_k^2 \right]$$
+$$Q(\boldsymbol{\theta}; \lambda, \alpha) = -\ell(\boldsymbol{\theta}) + \lambda \sum_{k \in \mathcal{P}} w_k \left[ \alpha \sqrt{\theta_k^2 + \varepsilon} + \left( \frac{1 - \alpha}{2} \right) \theta_k^2 \right]$$
 
 where:
 - $\lambda \ge 0$ controls the overall regularization strength.
 - $\alpha \in [0, 1]$ controls the balance between the $\ell_1$ (LASSO) and $\ell_2$ (Ridge) components (setting $\alpha = 1$ recovers the pure LASSO penalty).
+- $w_k$ are coordinate weights: $w_k = 1$ by default, or $w_k = 1/|\tilde\theta_k|^\gamma$ from an unpenalized fit with `penalty_weights = "adaptive"` (the adaptive LASSO).
 - $\varepsilon > 0$ is a small smoothing parameter ensuring differentiability at the origin.
 - $\mathcal{P}$ is the index set of penalized parameters. The baseline intercepts ($\mu_0, \phi_0, \xi_0$) and deterministic seasonal Fourier harmonics are kept unpenalized by construction ($\mathcal{P} \cap \text{unpenalized} = \emptyset$).
 
-The optimization is solved via the quasi-Newton BFGS or L-BFGS-B algorithm supplied with exact analytical gradients:
+The optimization is solved via the quasi-Newton BFGS algorithm (with L-BFGS-B as a fallback) supplied with exact analytical gradients, and convergence is certified by the Karush-Kuhn-Tucker conditions of the penalized problem:
 
 $$\nabla_{\boldsymbol{\theta}} Q(\boldsymbol{\theta}; \lambda, \alpha) = -\nabla_{\boldsymbol{\theta}} \ell(\boldsymbol{\theta}) + \nabla_{\boldsymbol{\theta}} P_{\lambda,\alpha}(\boldsymbol{\theta})$$
 
-The regularization path parameter $\lambda^{\ast}$ is selected by minimizing the Bayesian Information Criterion (BIC). Automatic selection can either use score-magnitude calibration across the location, log-scale, and shape blocks (`lambda_scaling = "gradient"`, the default) or a common scalar penalty (`lambda_scaling = "common"`):
+The regularization path parameter $\lambda^{\ast}$ is selected by minimizing the Bayesian Information Criterion (BIC). Automatic selection can either use a common scalar penalty for all blocks (`lambda_scaling = "common"`, the default) or score-magnitude calibration across the location, log-scale, and shape blocks (`lambda_scaling = "gradient"`):
 
 $$\text{BIC}(\lambda) = -2\ell(\hat{\boldsymbol{\theta}}_\lambda) + k_\lambda \log(m)$$
 
@@ -64,7 +65,7 @@ To capture long-run risk over the natural variability of the climate system, the
 
 $$G_{\Pi}(z) = \mathbb{E}_{\{\mathbf{v} \sim \Pi\}} \left\lbrack G(z \mid \mathbf{v}) \right\rbrack = \mathbb{E}_{\{\mathbf{v} \sim \Pi\}} \left\lbrack \exp \left\lbrace -\frac{1}{n_{y}} \sum_{j=1}^{n_{y}} \left\lbrack 1 + \xi(t_{j}) \left\lparen \frac{z - \mu(t_{j} \mid \mathbf{v})}{\sigma(t_{j} \mid \mathbf{v})} \right\rparen \right\rbrack_{{+}}^{-1/\xi(t_{j})} \right\rbrace \right\rbrack$$
 
-The joint distribution $\Pi$ is modeled via a stationary Vector Autoregressive process, $\text{VAR}(p)$, or a univariate AR model when only one covariate is required. The fitted generator verifies that the companion-root spectral radius is below one before simulation. Independent synthetic annual trajectories are initialized from the fitted stationary Gaussian state distribution at the fitted temporal resolution, Fourier seasonality is re-injected, and $G_{\Pi}(z)$ is estimated via Monte Carlo integration over $n_{mc}$ simulated years. A zero-state burn-in initialization remains available as a sensitivity option:
+The joint distribution $\Pi$ is modeled via a stationary Vector Autoregressive process, $\text{VAR}(p)$, fitted by least squares with Schwarz order selection (a single covariate is a $\text{VAR}(p)$ with $K = 1$). The fitted generator verifies that the companion-root spectral radius is below one before simulation. Independent synthetic annual trajectories are initialized from the fitted stationary Gaussian state distribution at the fitted temporal resolution, Fourier seasonality is re-injected, and $G_{\Pi}(z)$ is estimated via Monte Carlo integration over $n_{mc}$ simulated years. A zero-state burn-in initialization remains available as a sensitivity option:
 
 $$\hat{G}_{\Pi, B}(z) = \frac{1}{n_{mc}} \sum_{r=1}^{n_{mc}} G(z \mid \mathbf{v}^{(r)})$$
 
@@ -78,6 +79,9 @@ The trajectory law $\Pi$ is replaced by the empirical distribution of eligible h
 $$G_{\hat\Pi_{\mathrm{emp}}}(z) = \frac{1}{K} \sum_{k=1}^{K} G(z \mid \mathbf{V}_k).$$
 
 The implementation approximates this finite empirical average by sampling `n_boot` complete years with replacement. This preserves the observed within-year covariate paths and is used as a sensitivity benchmark for the parametric trajectory generator.
+
+### 2.4 Uncertainty and Validation
+`bootstrap_rl()`, `bootstrap_coef()` and `bootstrap_nhpp()` give parametric bootstrap intervals for return levels and coefficients, conditional on the selected penalty (with `occurrence = "simulated"`, the number and timing of exceedances are also redrawn). `backtest()` refits the model on expanding training windows and compares the observed annual maxima of the following years with the nominal exceedance rates of approaches B and C. `residuals()` and `plot(fit, type = "qq")` provide time-rescaling diagnostics.
 
 ---
 

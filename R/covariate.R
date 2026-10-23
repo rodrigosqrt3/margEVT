@@ -186,6 +186,19 @@ build_cov_annual <- function(fit, cov_vals = list(), n_obs = NULL,
     }
   }
 
+  # Only covariates with a non-zero operational coefficient can change the
+  # fitted parameters; filling the others with 0 is exact and silent.
+  if (length(missing_covariates) > 0L) {
+    beta <- tryCatch(stats::coef(fit, operational = TRUE),
+                     error = function(e) NULL)
+    if (!is.null(beta) && !is.null(names(beta))) {
+      used <- vapply(missing_covariates, function(v) {
+        b <- beta[names(beta) %in% paste0(c("mu.", "sigma.", "xi."), v)]
+        length(b) == 0L || any(b != 0)
+      }, logical(1L))
+      missing_covariates <- missing_covariates[used]
+    }
+  }
   if (length(missing_covariates) > 0L)
     warning(sprintf(
       "build_cov_annual: column(s) %s not in `cov_vals`; filled with 0.",

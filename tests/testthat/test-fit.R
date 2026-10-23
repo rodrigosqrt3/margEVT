@@ -293,3 +293,259 @@ test_that(".warmstart handles all(lambda == 0) early exit", {
                               penalize_shape = TRUE)
   expect_identical(res, init_mock)
 })
+
+test_that(".warmstart applies coordinate-specific soft thresholds", {
+  df <- make_pen_df(500L)
+  dm <- build_design_matrices(df, loc_vars = "x2", scale_vars = "x3")
+  init <- c(15, 0.4, log(3), 0.3, 0.05)
+  ws <- margEVT:::.warmstart(init, dm, df$y, 16,
+                             lambda = c(mu = 1e6, sigma = 0, xi = 0),
+                             alpha = 1, penalize_shape = TRUE)
+  expect_equal(ws[2L], 0)
+  expect_equal(ws[4L], init[4L])
+  expect_identical(
+    margEVT:::.warmstart(init, dm, df$y, 16, lambda = c(mu = 1, sigma = 1, xi = 1),
+                         alpha = 1, penalize_shape = TRUE,
+                         penalty_weights = rep(0, 5L)),
+    init)
+})
+
+# -----------------------------------------------------------------------------
+# Optimizer fallbacks and KKT certification
+# -----------------------------------------------------------------------------
+
+test_that(".fit_at_lambda tries a BFGS restart and L-BFGS-B when KKT fails", {
+  df <- make_pen_df(300L)
+  dm <- build_design_matrices(df, loc_vars = "x1")
+  calls <- character(0L)
+  testthat::local_mocked_bindings(
+    .optim_nhpp = function(par, fn, gr, method, control) {
+      calls <<- c(calls, method)
+      list(par = par, value = fn(par), convergence = 0L)
+    }
+  )
+  res <- margEVT:::.fit_at_lambda(dm, df$y, 16, lambda = 0, alpha = 1,
+                                  penalize_shape = TRUE,
+                                  init = c(15, 0, log(3), 0.05))
+  expect_identical(calls, c("BFGS", "BFGS", "L-BFGS-B"))
+  expect_false(res$converged)
+  expect_true(is.finite(res$kkt))
+})
+
+test_that(".fit_at_lambda discards optimizer results outside the support", {
+  df <- make_pen_df(300L)
+  dm <- build_design_matrices(df)
+  testthat::local_mocked_bindings(
+    .optim_nhpp = function(par, fn, gr, method, control)
+      list(par = par, value = 1e9, convergence = 0L)
+  )
+  res <- margEVT:::.fit_at_lambda(dm, df$y, 16, lambda = 0, alpha = 1,
+                                  penalize_shape = TRUE,
+                                  init = c(15, log(3), 0.05))
+  expect_false(res$converged)
+  expect_true(is.na(res$kkt))
+})
+
+# -----------------------------------------------------------------------------
+# Penalty weights and starting values
+# -----------------------------------------------------------------------------
+
+test_that("adaptive weights are stored and applied", {
+  df <- make_pen_df()
+  expect_message(
+    fit <- fit_nhpp(df, threshold = 16, loc_vars = c("x1", "x2", "x3"),
+                    penalty = "lasso", lambda = 2,
+                    penalty_weights = "adaptive", verbose = TRUE),
+    "adaptive weights from mle")
+  w <- fit$penalty_weights
+  expect_named(w, names(fit$par))
+  expect_equal(unname(w[c("mu.(Intercept)", "sigma.(Intercept)",
+                          "xi.(Intercept)")]), c(0, 0, 0))
+  expect_true(all(w[c("mu.x1", "mu.x2", "mu.x3")] > 0))
+  expect_lt(w["mu.x1"], w["mu.x2"])
+  expect_identical(fit$weights_source, "adaptive: mle")
+  expect_output(print(fit), "Weights")
+  expect_output(print(summary(fit)), "Weights")
+})
+
+test_that("adaptive weights fall back to ridge and fail informatively", {
+  df <- make_pen_df(400L)
+  dm <- build_design_matrices(df, loc_vars = "x1")
+  init <- c(15, 0, log(3), 0.05)
+  testthat::local_mocked_bindings(
+    .fit_at_lambda = function(dm, y, threshold, lambda, alpha, ...)
+      list(converged = lambda >= 1, par = c(15, 0.5, log(3), 0.05))
+  )
+  aw <- margEVT:::.adaptive_weights(dm, df$y, 16, init, TRUE, 365.25)
+  expect_identical(aw$source, "ridge(lambda=1)")
+  expect_equal(aw$weights[2L], 2)
+  expect_error(
+    margEVT:::.adaptive_weights(dm, df$y, 16, init, TRUE, 365.25,
+                                ridge_lambdas = 0.5),
+    "convergent initial fit")
+})
+
+test_that("numeric penalty weights and init are validated and reordered", {
+  df <- make_pen_df(600L)
+  base <- fit_nhpp(df, threshold = 16, loc_vars = c("x1", "x2"),
+                   penalty = "none", verbose = FALSE)
+  nm <- names(base$par)
+  w <- stats::setNames(c(0, 1, 5, 0, 0), nm)
+  fit <- fit_nhpp(df, threshold = 16, loc_vars = c("x1", "x2"),
+                  penalty = "lasso", lambda = 1, penalty_weights = rev(w),
+                  init = rev(base$par), verbose = FALSE)
+  expect_identical(fit$weights_source, "user")
+  expect_equal(fit$penalty_weights, w)
+  expect_error(fit_nhpp(df, 16, loc_vars = "x1", penalty = "lasso", lambda = 1,
+                        penalty_weights = c(1, -1, 0, 0), verbose = FALSE),
+               "non-negative")
+  expect_error(fit_nhpp(df, 16, loc_vars = "x1", penalty = "lasso", lambda = 1,
+                        penalty_weights = c(a = 1, b = 1, c = 1, d = 1),
+                        verbose = FALSE), "names of `penalty_weights`")
+  expect_error(fit_nhpp(df, 16, loc_vars = "x1", penalty = "lasso", lambda = 1,
+                        penalty_weights = "other", verbose = FALSE),
+               "penalty_weights")
+  expect_error(fit_nhpp(df, 16, loc_vars = "x1", init = 1:2, verbose = FALSE),
+               "init")
+  expect_error(fit_nhpp(df, 16, loc_vars = "x1",
+                        init = c(a = 1, b = 1, c = 1, d = 1), verbose = FALSE),
+               "names of `init`")
+  expect_error(fit_nhpp(df, 16, grad_tol = 0, verbose = FALSE), "grad_tol")
+  expect_error(fit_nhpp(df, 16, adaptive_gamma = -1, verbose = FALSE),
+               "adaptive_gamma")
+})
+
+test_that("adaptive weights are ignored for unpenalized fits", {
+  df <- make_pen_df(400L)
+  fit <- fit_nhpp(df, threshold = 16, loc_vars = "x1", penalty = "none",
+                  penalty_weights = "adaptive", verbose = FALSE)
+  expect_null(fit$penalty_weights)
+  expect_identical(fit$weights_source, "none")
+})
+
+# -----------------------------------------------------------------------------
+# Lower bound on the shape parameter
+# -----------------------------------------------------------------------------
+
+test_that("fit_nhpp converges at the shape bound for a short-tailed sample", {
+  set.seed(5)
+  n <- 4000L
+  df <- data.frame(y = stats::runif(n, 0, 10), t = seq(0, 1, length.out = n))
+  # uniform tail: GPD shape -1, so the bound -0.5 is active
+  fit <- fit_nhpp(df, threshold = 8, penalty = "none", verbose = FALSE)
+  expect_true(fit$converged)
+  expect_true(fit$shape_at_bound)
+  expect_equal(unname(fit$par["xi.(Intercept)"]), -0.5, tolerance = 1e-6)
+  expect_output(print(fit), "Shape bound  : active \\(xi >= -0.5\\)")
+  fit_t <- fit_nhpp(df, threshold = 8, shape_vars = "t", penalty = "lasso",
+                    lambda = 1, verbose = FALSE)
+  expect_true(fit_t$converged)
+  expect_gte(min(fit_t$fitted$xi), -0.5 - 1e-8)
+  expect_error(fit_nhpp(df, threshold = 8, shape_lower = 0.1, verbose = FALSE),
+               "shape_lower")
+})
+
+test_that("fits away from the bound are unaffected by it", {
+  set.seed(6)
+  df <- data.frame(y = stats::rexp(3000L, 1 / 3))
+  f1 <- fit_nhpp(df, threshold = 8, penalty = "none", verbose = FALSE)
+  f2 <- fit_nhpp(df, threshold = 8, penalty = "none", shape_lower = -Inf,
+                 verbose = FALSE)
+  expect_false(f1$shape_at_bound)
+  expect_equal(f1$par, f2$par, tolerance = 1e-8)
+})
+
+test_that("refits that start at the shape bound converge (active set)", {
+  set.seed(5)
+  n <- 4000L
+  df <- data.frame(y = stats::runif(n, 0, 10), t = seq(0, 1, length.out = n))
+  fit <- fit_nhpp(df, threshold = 8, shape_vars = "t", penalty = "lasso",
+                  lambda = 1, verbose = FALSE)
+  expect_true(fit$shape_at_bound)
+  df$y <- stats::runif(n, 0, 10)                        # new sample, same law
+  calls <- character(0)
+  testthat::local_mocked_bindings(
+    .optim_nhpp = function(...) {
+      a <- list(...); calls <<- c(calls, a$method); stats::optim(...)
+    }
+  )
+  res <- margEVT:::.fit_at_lambda(fit$dm, df$y, 8, lambda = fit$lambda,
+                                  alpha = 1, penalize_shape = TRUE,
+                                  init = fit$par, obs_per_year = 365.25,
+                                  shape_lower = -0.5)
+  expect_true(res$converged)
+  expect_identical(calls[1L], "BFGS")                   # active set, not L-BFGS-B
+  expect_gte(min(fit$dm$X_xi %*% utils::tail(res$par, 2L)), -0.5 - 1e-8)
+})
+
+test_that("active-set failure at the bound falls back to bounded L-BFGS-B", {
+  set.seed(5)
+  n <- 4000L
+  df <- data.frame(y = stats::runif(n, 0, 10), t = seq(0, 1, length.out = n))
+  fit <- fit_nhpp(df, threshold = 8, shape_vars = "t", penalty = "lasso",
+                  lambda = 1, verbose = FALSE)
+  expect_true(fit$shape_at_bound)
+  calls <- character(0)
+  testthat::local_mocked_bindings(
+    .optim_nhpp = function(...) {
+      a <- list(...); calls <<- c(calls, a$method)
+      if (identical(a$method, "BFGS")) stop("forced BFGS failure")
+      stats::optim(...)
+    }
+  )
+  res <- margEVT:::.fit_at_lambda(fit$dm, df$y, 8, lambda = fit$lambda,
+                                  alpha = 1, penalize_shape = TRUE,
+                                  init = fit$par, obs_per_year = 365.25,
+                                  shape_lower = -0.5)
+  expect_identical(calls[1L], "BFGS")                   # active set tried first
+  expect_true("L-BFGS-B" %in% calls)
+  expect_true(all(is.finite(res$par)))
+  expect_gte(min(fit$dm$X_xi %*% utils::tail(res$par, 2L)), -0.5 - 1e-6)
+})
+
+# -----------------------------------------------------------------------------
+# Parameter scaling for the optimizer
+# -----------------------------------------------------------------------------
+
+test_that("parameter scaling reaches a fit at least as good as unscaled", {
+  set.seed(5L)
+  n <- 3000L
+  df <- data.frame(x1 = stats::rnorm(n), x2 = stats::rnorm(n), x3 = stats::rnorm(n))
+  df$y <- 30 + 3 * df$x1 + exp(1.5 + 0.2 * df$x2) *
+    (((100 * -log(stats::runif(n)))^0.1 - 1) / -0.1)
+  u <- unname(stats::quantile(df$y, 0.95))
+  args <- list(df = df, threshold = u, loc_vars = c("x1", "x2", "x3"),
+               scale_vars = c("x1", "x2", "x3"), penalty = "lasso",
+               lambda = 1, penalty_weights = "adaptive", obs_per_year = 100,
+               verbose = FALSE)
+  fa <- do.call(fit_nhpp, c(args, scaling = "auto"))
+  fn <- do.call(fit_nhpp, c(args, scaling = "none"))
+  expect_identical(fa$scaling, "auto")
+  expect_identical(fn$scaling, "none")
+  expect_true(fa$converged && fn$converged)
+  expect_lte(fa$nllh_pen, fn$nllh_pen + 1e-6 * abs(fn$nllh_pen))
+  expect_identical(fa$par_oper != 0, fn$par_oper != 0)
+  expect_equal(unname(fa$par), unname(fn$par), tolerance = 1e-2)
+  ps <- margEVT:::.par_scale(fa$par, fa$dm, df$y, u, 100)
+  expect_true(all(is.finite(ps)) && all(ps > 0))
+})
+
+test_that(".par_scale returns NULL when the curvature cannot be computed", {
+  testthat::local_mocked_bindings(
+    .nhpp_eval = function(...) list(value = 1e9, grad = c(0, 0))
+  )
+  expect_null(margEVT:::.par_scale(c(0, 0), NULL, NULL, 0, 1))
+})
+
+test_that(".par_scale returns NULL when a perturbed point leaves the support", {
+  n_calls <- 0L
+  testthat::local_mocked_bindings(
+    .nhpp_eval = function(...) {
+      n_calls <<- n_calls + 1L
+      if (n_calls == 1L) list(value = 1, grad = c(1, 1)) else
+        list(value = 1e9, grad = c(NA_real_, NA_real_))
+    }
+  )
+  expect_null(margEVT:::.par_scale(c(0, 0), NULL, NULL, 0, 1))
+  expect_equal(n_calls, 3L)                             # e0 + one per coordinate
+})

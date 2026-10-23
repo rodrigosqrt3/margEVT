@@ -444,3 +444,47 @@ plot.nhpp_rl <- function(x, ...) {
                    lty = 1, pch = 19, bty = "n")
   invisible(NULL)
 }
+
+
+#' Annual non-exceedance probability under a covariate law
+#'
+#' Computes \eqn{G(z) = P(M \le z)}, the probability that the annual maximum
+#' does not exceed \code{z}, averaged over annual covariate blocks: the
+#' quantity inverted by \code{\link{marginalize}} and used for probability
+#' integral transforms of observed annual maxima.
+#'
+#' @param fit An \code{nhpp_fit} object.
+#' @param z Numeric vector of levels.
+#' @param covariates Annual covariate blocks with every column of the model
+#'   (e.g. from \code{\link{build_cov_annual}}): a list of data frames with
+#'   \code{n_obs} rows each, or one data frame stacking them.
+#' @param n_obs Integer observations per year. If \code{NULL}, the rounded
+#'   \code{fit$obs_per_year}.
+#'
+#' @return Numeric vector of probabilities, one per element of \code{z}.
+#'
+#' @examples
+#' set.seed(1)
+#' df <- data.frame(x = rnorm(1500))
+#' df$y <- 10 + df$x + rexp(1500, 1 / 3)
+#' fit <- fit_nhpp(df, threshold = 18, loc_vars = "x", penalty = "none",
+#'                 obs_per_year = 50, verbose = FALSE)
+#' blocks <- lapply(c(-1, 0, 1), function(v) build_cov_annual(fit, list(x = v)))
+#' annual_prob(fit, c(20, 25, 30), blocks)
+#'
+#' @export
+annual_prob <- function(fit, z, covariates, n_obs = NULL) {
+  if (!inherits(fit, "nhpp_fit"))
+    stop("annual_prob: `fit` must be an nhpp_fit object.")
+  if (!is.numeric(z) || any(!is.finite(z)))
+    stop("annual_prob: `z` must contain finite numeric values.")
+  n_obs <- if (is.null(n_obs)) as.integer(round(fit$obs_per_year)) else
+    as.integer(n_obs)
+  big <- if (is.data.frame(covariates)) covariates else
+    do.call(rbind, covariates)
+  if (!is.data.frame(big) || nrow(big) == 0L || nrow(big) %% n_obs != 0L)
+    stop("annual_prob: `covariates` must hold whole years of `n_obs` rows.")
+  prm <- predict_params(fit, big)
+  vapply(z, function(zz)
+    .annual_exceedance_prob(zz, prm$mu, prm$sigma, prm$xi, n_obs), numeric(1L))
+}

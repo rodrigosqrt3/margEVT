@@ -5,11 +5,12 @@ bibentry(
   title       = "{margEVT}: Regularized Point Processes and Stochastic Marginalization for Extremes",
   author      = person("Rodrigo Fonseca", "Villa"),
   year        = "2026",
-  note        = "R package version 0.4.0",
+  note        = paste("R package version", meta$Version),
   url         = "https://github.com/rodrigosqrt3/margEVT",
   textVersion = paste(
     "Villa, R. F. (2026). margEVT: Regularized Point Processes and",
-    "Stochastic Marginalization for Extremes. R package version 0.4.0.",
+    "Stochastic Marginalization for Extremes. R package version",
+    paste0(meta$Version, "."),
     "https://github.com/rodrigosqrt3/margEVT"
   )
 )

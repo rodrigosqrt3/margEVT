@@ -187,3 +187,162 @@ test_that("bootstrap catches invalid GPD scale limit", {
     regexp = "invalid GPD scale"
   )
 })
+
+# -----------------------------------------------------------------------------
+# Reproducibility, refit settings and parallel execution
+# -----------------------------------------------------------------------------
+
+test_that("bootstrap is reproducible, keeps the caller RNG and stores replicates", {
+  df <- .boot_data()
+  fit <- fit_nhpp(df, threshold = 10, loc_vars = "x", penalty = "none",
+                  obs_per_year = 50, verbose = FALSE)
+  set.seed(8L); expected <- stats::runif(2L)
+  set.seed(8L); first <- stats::runif(1L)
+  a <- bootstrap_coef(fit, df, R = 6L, seed = 5L, verbose = FALSE)
+  second <- stats::runif(1L)
+  expect_equal(c(first, second), expected)
+  b <- bootstrap_coef(fit, df, R = 6L, seed = 5L, verbose = FALSE)
+  expect_identical(a, b)
+  expect_equal(dim(attr(a, "replicates")), c(6L, length(fit$par)))
+  expect_identical(colnames(attr(a, "replicates")), names(fit$par))
+
+  rl <- bootstrap_rl(fit, df, TRs = c(5, 10), R = 3L, approach = "A",
+                     seed = NULL, verbose = FALSE)
+  expect_identical(colnames(attr(rl, "replicates")), c("T5", "T10"))
+})
+
+test_that("bootstrap validates seed, cores and approach", {
+  df <- .boot_data()
+  fit <- fit_nhpp(df, threshold = 10, loc_vars = "x", penalty = "none",
+                  obs_per_year = 50, verbose = FALSE)
+  expect_error(bootstrap_coef(fit, df, R = 2L, seed = "a"), "seed")
+  expect_error(bootstrap_coef(fit, df, R = 2L, cores = 0), "cores")
+  expect_error(bootstrap_rl(fit, df, TRs = 10, R = 2L, cores = 0), "cores")
+  expect_error(bootstrap_rl(fit, df, TRs = 10, R = 2L, approach = c("A", "B")),
+               "approach")
+})
+
+test_that("bootstrap refits keep the original penalty weights and settings", {
+  df <- .boot_data()
+  fit <- fit_nhpp(df, threshold = 10, loc_vars = c("x", "z"),
+                  penalty = "lasso", lambda = 2, penalty_weights = "adaptive",
+                  grad_tol = 1e-3, adaptive_gamma = 0.5,
+                  obs_per_year = 50, verbose = FALSE)
+  expect_identical(fit$grad_tol, 1e-3)
+  expect_identical(fit$adaptive_gamma, 0.5)
+  fit_b <- margEVT:::.refit_boot(df, fit)
+  expect_identical(fit_b$penalty_weights, fit$penalty_weights)
+  expect_identical(fit_b$weights_source, "user")
+  expect_identical(fit_b$grad_tol, 1e-3)
+  expect_equal(fit_b$par, fit$par, tolerance = 1e-4)
+
+  fit_a <- margEVT:::.refit_boot(df[df$year < 2010, ], fit,
+                                 penalty_weights = "adaptive")
+  expect_match(fit_a$weights_source, "^adaptive")
+  expect_identical(fit_a$adaptive_gamma, 0.5)
+
+  # legacy objects without the 0.4.0 fields still refit
+  legacy <- fit
+  legacy[c("penalty_weights", "lambda_scaling", "adaptive_gamma",
+           "grad_tol", "active_tol")] <- list(NULL)
+  expect_s3_class(margEVT:::.refit_boot(df, legacy), "nhpp_fit")
+})
+
+test_that("parallel bootstrap and backtest equal their serial versions", {
+  skip_on_cran()
+  skip_if_not(.installed_matches(),
+              "installed margEVT differs from the tested version")
+  df <- .boot_data()
+  fit <- fit_nhpp(df, threshold = 10, loc_vars = "x", penalty = "none",
+                  obs_per_year = 50, verbose = FALSE)
+  expect_identical(
+    bootstrap_coef(fit, df, R = 4L, seed = 2L, cores = 2L, verbose = FALSE),
+    bootstrap_coef(fit, df, R = 4L, seed = 2L, cores = 1L, verbose = FALSE))
+  args <- list(fit, df, varname = "y", TRs = 2, n_obs = 50L,
+               window_years = 10L, min_train_years = 15L, n_boot = 10L,
+               verbose = FALSE)
+  expect_identical(do.call(backtest, c(args, cores = 2L)),
+                   do.call(backtest, c(args, cores = 1L)))
+})
+
+# -----------------------------------------------------------------------------
+# refit_nhpp(), bootstrap_nhpp() and simulated occurrences
+# -----------------------------------------------------------------------------
+
+test_that("refit_nhpp refits with the same specification", {
+  s <- make_bt_df()
+  d2 <- s$df; set.seed(9); d2$y <- 5 + 0.8 * d2$x + stats::rexp(nrow(d2), 1 / 2)
+  f2 <- refit_nhpp(s$fit, d2)
+  expect_s3_class(f2, "nhpp_fit")
+  expect_true(f2$converged)
+  expect_identical(names(f2$par), names(s$fit$par))
+  expect_error(refit_nhpp(list(), d2), "nhpp_fit")
+  expect_error(refit_nhpp(s$fit, d2[, "x", drop = FALSE]), "column `y`")
+})
+
+test_that("bootstrap_nhpp reproduces bootstrap_rl and bootstrap_coef", {
+  s <- make_bt_df()
+  b  <- bootstrap_nhpp(s$fit, s$df, TRs = c(5, 20), R = 12, approach = "C",
+                       marginalize_args = list(year_col = "year", n_boot = 20),
+                       seed = 7, verbose = FALSE)
+  br <- bootstrap_rl(s$fit, s$df, TRs = c(5, 20), R = 12, approach = "C",
+                     marginalize_args = list(year_col = "year", n_boot = 20),
+                     seed = 7, verbose = FALSE)
+  bc <- bootstrap_coef(s$fit, s$df, R = 12, seed = 7, verbose = FALSE)
+  expect_equal(b$rl$CI_low, br$CI_low)
+  expect_equal(b$rl$CI_high, br$CI_high)
+  expect_equal(b$coef$CI_low, bc$CI_low)
+  expect_equal(dim(b$coef_replicates), c(12L, length(s$fit$par)))
+  expect_null(bootstrap_nhpp(s$fit, s$df, TRs = NULL, R = 5, seed = 1,
+                             verbose = FALSE)$rl)
+})
+
+test_that("bootstrap_nhpp validates inputs, reports progress and keeps failures", {
+  s <- make_bt_df()
+  expect_error(bootstrap_nhpp(s$fit, s$df, R = 2, marginalize_args = 1,
+                              verbose = FALSE), "marginalize_args")
+  expect_error(bootstrap_nhpp(s$fit, s$df, R = 2, approach = "D",
+                              verbose = FALSE), "approach")
+  expect_error(bootstrap_nhpp(s$fit, s$df, TRs = 1, R = 2, verbose = FALSE),
+               "TRs")
+  # approach B without `mc_sample`: marginalize() fails, levels become NA
+  msgs <- testthat::capture_messages(
+    b <- bootstrap_nhpp(s$fit, s$df, TRs = 10, R = 2, approach = "B",
+                        seed = 1, verbose = TRUE)
+  )
+  expect_match(msgs, "bootstrap_nhpp: R=2 \\| approach=B", all = FALSE)
+  expect_match(msgs, "replicates succeeded", all = FALSE)
+  expect_true(is.na(b$rl$RL_est))
+  expect_true(all(is.na(b$rl_replicates)))
+})
+
+test_that("bootstrap can resample the occurrence pattern", {
+  s <- make_bt_df()
+  bf <- bootstrap_coef(s$fit, s$df, R = 8, seed = 3, verbose = FALSE)
+  bs <- bootstrap_coef(s$fit, s$df, R = 8, seed = 3, occurrence = "simulated",
+                       verbose = FALSE)
+  expect_true(all(bs$n_ok > 0))
+  rf <- attr(bf, "replicates"); rs <- attr(bs, "replicates")
+  expect_false(isTRUE(all.equal(rf, rs)))           # different resampling scheme
+  expect_identical(bootstrap_coef(s$fit, s$df, R = 8, seed = 3,
+                                  occurrence = "fixed", verbose = FALSE), bf)
+  expect_error(bootstrap_coef(s$fit, s$df, R = 2, occurrence = "x",
+                              verbose = FALSE), "should be one of")
+})
+
+test_that("simulated occurrences require the threshold inside the support", {
+  s <- make_bt_df()
+  testthat::local_mocked_bindings(.tail_measure_at_level = function(...) Inf)
+  expect_error(bootstrap_coef(s$fit, s$df, R = 2, occurrence = "simulated",
+                              verbose = FALSE),
+               "threshold lies outside the fitted support")
+})
+
+test_that("replicates with fewer than 5 simulated exceedances are dropped", {
+  s <- make_bt_df()
+  testthat::local_mocked_bindings(.tail_measure_at_level = function(...) 0)
+  b <- bootstrap_nhpp(s$fit, s$df, TRs = NULL, R = 3, seed = 1,
+                      occurrence = "simulated", verbose = FALSE)
+  expect_true(all(is.na(b$coef_replicates)))
+  expect_true(all(b$coef$n_ok == 0L))
+})

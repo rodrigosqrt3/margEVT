@@ -7,11 +7,13 @@
 # forward by `window_years`. No hardcoded dates anywhere.
 #
 # For each window:
-#   1. Fit the model on training years at the original lambda/alpha
-#   2. Build empirical block bootstrap covariate sample from training years
-#   3. Compute return levels on training data
-#   4. Validate against observed annual maxima in validation years
-#   5. Compute a tail-conditional PIT diagnostic
+#   1. Optionally decluster the training series (training data only)
+#   2. Refit the model on training years (original or BIC-reselected lambda)
+#   3. Integrate out the covariates: C = resampled training years,
+#      B = VAR generator fitted to the training years
+#   4. Compute return levels (trend at the end of training)
+#   5. Validate against observed annual maxima in validation years
+#   6. Compute a tail-conditional PIT diagnostic
 # =============================================================================
 
 #' Walk-forward backtesting for NHPP extreme value models
@@ -41,8 +43,9 @@
 #'   Default \code{5L}.
 #' @param min_train_years Integer. Minimum number of training years before
 #'   the first validation window. Default \code{10L}.
-#' @param n_boot Integer. Bootstrap years for covariate marginalization
-#'   within each window. Default \code{200L}.
+#' @param n_boot Integer. Resampled years (approach C) or simulated
+#'   trajectories (approach B) for covariate marginalization within each
+#'   window. Default \code{200L}.
 #' @param interactions Named list of interactions passed to
 #'   \code{\link{build_cov_annual}}. Default \code{list()}.
 #' @param year_col Character. Name of the year column. Default \code{"year"}.
@@ -62,6 +65,20 @@
 #'   by BIC in every training window; otherwise the original \code{lambda} is
 #'   kept. Adaptive penalty weights are always recomputed within each training
 #'   window, so the weights do not use validation data. Default \code{FALSE}.
+#' @param approaches Character vector, any of \code{"B"} and \code{"C"}: how
+#'   the covariates are integrated out in each window. \code{"C"} (default)
+#'   resamples observed training years; \code{"B"} fits a VAR generator
+#'   (\code{\link{fit_var_generator}}) to the training years only and uses
+#'   \code{n_boot} simulated trajectories. Both are evaluated on the same
+#'   window refit. The first element defines the legacy columns \code{F_ann}
+#'   and \code{exc_T<TR>}.
+#' @param generator_args Named list of further arguments for
+#'   \code{\link{fit_var_generator}} in approach B (e.g. \code{vars},
+#'   \code{derive}, \code{derive_lead}). Default \code{list()}.
+#' @param decluster Optional function applied to the training-year values of
+#'   \code{varname} (in row order) in each window; its result replaces
+#'   \code{y} for the refit, so declustering uses training data only.
+#'   Default \code{NULL} (use \code{data$y} as supplied).
 #' @param cores Positive integer number of worker processes over which the
 #'   windows are distributed. Results do not depend on \code{cores}.
 #'   Default \code{1L}.
@@ -69,15 +86,16 @@
 #'
 #' @return A list with three elements:
 #'   \item{results}{Data frame with one row per validation year, containing
-#'     the observed annual maximum, PIT value, and exceedance indicators for
-#'     each return period.}
+#'     the observed annual maximum and, for each approach \code{a}, the PIT
+#'     value \code{F_ann_<a>} and exceedance indicators \code{exc_<a>_T<TR>};
+#'     \code{F_ann} and \code{exc_T<TR>} repeat those of the first approach.}
 #'   \item{binom_tests}{Data frame with nominal binomial comparisons for each
-#'     TR. The \code{not_rejected} field is the recommended interpretation;
-#'     \code{calibrated} is retained as a legacy alias.}
+#'     approach and TR. The \code{not_rejected} field is the recommended
+#'     interpretation; \code{calibrated} is retained as a legacy alias.}
 #'   \item{ks_test}{Data frame with the exploratory tail-conditional PIT
-#'     KS comparison, including \code{not_rejected} and the legacy
-#'     \code{calibrated} alias, or \code{NULL} if fewer than 5 validation
-#'     years had events.}
+#'     KS comparison for each approach, including \code{not_rejected} and the
+#'     legacy \code{calibrated} alias, or \code{NULL} if fewer than 5
+#'     validation years had events.}
 #'
 #' @seealso \code{\link{marginalize}}, \code{\link{fit_nhpp}}
 #'
@@ -111,6 +129,9 @@ backtest <- function(fit, data, varname,
                      trend_col       = NULL,
                      fixed           = list(),
                      reselect_lambda = FALSE,
+                     approaches      = "C",
+                     generator_args  = list(),
+                     decluster       = NULL,
                      cores           = 1L,
                      verbose         = TRUE) {
 
@@ -132,6 +153,14 @@ backtest <- function(fit, data, varname,
   if (!is.logical(reselect_lambda) || length(reselect_lambda) != 1L ||
       is.na(reselect_lambda))
     stop("backtest: `reselect_lambda` must be TRUE or FALSE.")
+  if (!is.character(approaches) || length(approaches) < 1L ||
+      anyDuplicated(approaches) || !all(approaches %in% c("B", "C")))
+    stop("backtest: `approaches` must contain 'B' and/or 'C'.")
+  if (!is.list(generator_args) ||
+      (length(generator_args) > 0L && is.null(names(generator_args))))
+    stop("backtest: `generator_args` must be a named list.")
+  if (!is.null(decluster) && !is.function(decluster))
+    stop("backtest: `decluster` must be a function or NULL.")
   cores <- .validate_cores(cores, "backtest")
   .validate_fixed(fixed, "backtest")
   model_cols <- unique(c(colnames(fit$dm$X_mu), colnames(fit$dm$X_sigma),
@@ -242,6 +271,12 @@ backtest <- function(fit, data, varname,
       df_train[[trend_col]] <- trend_value(df_train[[year_col]], train_end)
       fixed_w[[trend_col]]  <- 1
     }
+    if (!is.null(decluster)) {
+      dc <- decluster(df_train[[varname]])
+      if (!is.numeric(dc) || length(dc) != nrow(df_train))
+        stop("backtest: `decluster` must return a numeric vector of the input length.")
+      df_train$y <- as.numeric(dc)
+    }
 
     fit_w <- .refit_boot(df_train, fit, lambda = window_lambda,
                          penalty_weights = window_weights)
@@ -265,27 +300,47 @@ backtest <- function(fit, data, varname,
       stats::setNames(as.list(rep(0, length(inactive_w))), inactive_w),
       fixed_w)
 
-    cov_w <- .build_cov_bootstrap(
-      fit_w        = fit_w,
-      data         = data,
-      train_yrs    = train_yrs,
-      ac_in_data   = cols_w,
-      n_boot       = n_boot,
-      n_obs        = n_obs,
-      interactions = interactions,
-      year_col     = year_col,
-      period       = period,
-      seed         = as.integer(seed) + j - 1L,
-      fixed        = fixed_w
-    )
-    if (length(cov_w) == 0L)
+    cov_by <- list()
+    if ("C" %in% approaches) {
+      cov_by$C <- .build_cov_bootstrap(
+        fit_w        = fit_w,
+        data         = data,
+        train_yrs    = train_yrs,
+        ac_in_data   = cols_w,
+        n_boot       = n_boot,
+        n_obs        = n_obs,
+        interactions = interactions,
+        year_col     = year_col,
+        period       = period,
+        seed         = as.integer(seed) + j - 1L,
+        fixed        = fixed_w
+      )
+    }
+    if ("B" %in% approaches) {
+      # Generator fitted to the training years only.
+      gen <- do.call(fit_var_generator,
+                     c(list(fit = fit_w, data = df_train), generator_args))
+      mc <- simulate_covariates(gen, n_mc = n_boot, n_obs = n_obs,
+                                seed = as.integer(seed) + 50000L + j - 1L)
+      build_B <- function(vals)
+        build_cov_annual(fit_w, utils::modifyList(as.list(vals), fixed_w),
+                         n_obs = n_obs, period = period,
+                         interactions = interactions)
+      cov_by$B <- if (is.null(mc)) list(build_B(list())) else lapply(mc, build_B)
+      msgs <- c(msgs, sprintf("  Generator (B): VAR(%d), spectral radius %.4f",
+                              if (is.null(gen)) 0L else gen$p_opt,
+                              if (is.null(gen)) 0 else gen$spectral_radius))
+    }
+    if (any(lengths(cov_by) == 0L))
       return(list(rows = list(),
                   msgs = c(msgs, "  -> No valid covariate blocks, skipping window.")))
 
-    rl_w <- .compute_rl_from_cov_list(fit_w, cov_w, TRs, thr, z_hi, n_obs)
-    msgs <- c(msgs, sprintf("  RLs: %s",
-                            paste(paste0("T", TRs, "=", round(rl_w, 1)),
-                                  collapse = " | ")))
+    rl_by <- lapply(cov_by, function(cv)
+      .compute_rl_from_cov_list(fit_w, cv, TRs, thr, z_hi, n_obs))
+    for (a in names(rl_by))
+      msgs <- c(msgs, sprintf("  RLs (%s): %s", a,
+                              paste(paste0("T", TRs, "=", round(rl_by[[a]], 1)),
+                                    collapse = " | ")))
 
     rows <- lapply(val_yrs, function(yr) {
       df_yr  <- data[data[[year_col]] == yr, , drop = FALSE]
@@ -294,34 +349,32 @@ backtest <- function(fit, data, varname,
       M_yr   <- if (length(exc_yr) > 0L) max(exc_yr) else NA_real_
       valid_year <- sum(!is.na(y_yr)) >= min_obs_year
 
-      if (is.na(M_yr) || !valid_year) {
-        F_yr <- NA_real_
-      } else {
-        # PIT: P(annual max <= M_yr) under the training model, with the
-        # trend extrapolated to the validation year.
-        cov_yr <- if (is.null(trend_col)) cov_w else
-          lapply(cov_w, set_trend, value = trend_value(yr, train_end))
-        F_vals <- vapply(cov_yr, function(cm)
-          .f_annual_one(M_yr, fit_w, cm), numeric(1L))
-        F_yr <- if (all(is.finite(F_vals))) mean(F_vals) else NA_real_
-      }
-
-      superou <- stats::setNames(
-        vapply(rl_w, function(rl)
+      row <- data.frame(window = j, year = yr, M_obs = round(M_yr, 3L),
+                        has_event = length(exc_yr) > 0L)
+      for (a in approaches) {
+        cov_a <- cov_by[[a]]
+        F_yr <- if (is.na(M_yr) || !valid_year) NA_real_ else {
+          # PIT: P(annual max <= M_yr) under the training model, with the
+          # trend extrapolated to the validation year.
+          cov_yr <- if (is.null(trend_col)) cov_a else
+            lapply(cov_a, set_trend, value = trend_value(yr, train_end))
+          F_vals <- vapply(cov_yr, function(cm)
+            .f_annual_one(M_yr, fit_w, cm), numeric(1L))
+          if (all(is.finite(F_vals))) mean(F_vals) else NA_real_
+        }
+        row[[paste0("F_ann_", a)]] <- round(F_yr, 4L)
+        exc <- vapply(rl_by[[a]], function(rl)
           if (!valid_year || is.na(rl)) NA else
-            if (is.na(M_yr)) FALSE else M_yr > rl,
-          logical(1L)),
-        paste0("exc_T", TRs)
-      )
-
-      row <- data.frame(
-        window    = j,
-        year      = yr,
-        M_obs     = round(M_yr, 3L),
-        F_ann     = round(F_yr, 4L),
-        has_event = length(exc_yr) > 0L
-      )
-      cbind(row, t(superou))
+            if (is.na(M_yr)) FALSE else M_yr > rl, logical(1L))
+        for (k in seq_along(TRs))
+          row[[sprintf("exc_%s_T%s", a, TRs[k])]] <- exc[k]
+      }
+      # Legacy columns: the first approach.
+      a1 <- approaches[1L]
+      row$F_ann <- row[[paste0("F_ann_", a1)]]
+      for (TR in TRs)
+        row[[paste0("exc_T", TR)]] <- row[[sprintf("exc_%s_T%s", a1, TR)]]
+      row
     })
     list(rows = rows, msgs = msgs)
   }
@@ -338,14 +391,14 @@ backtest <- function(fit, data, varname,
 
   df_results <- do.call(rbind, results_list)
 
-  binom_list <- lapply(TRs, function(TR) {
-    col   <- paste0("exc_T", TR)
+  binom_list <- lapply(approaches, function(a) lapply(TRs, function(TR) {
+    col   <- sprintf("exc_%s_T%s", a, TR)
     n_exc <- sum(df_results[[col]], na.rm = TRUE)
     n_tot <- sum(!is.na(df_results[[col]]))
     p_teo <- 1 / TR
     if (n_tot == 0L) {
       return(data.frame(
-        TR = TR, expected = round(p_teo, 4L), observed = NA_real_,
+        approach = a, TR = TR, expected = round(p_teo, 4L), observed = NA_real_,
         n_exceedances = 0L, n_total = 0L, p_value = NA_real_,
         not_rejected = NA, calibrated = NA
       ))
@@ -353,6 +406,7 @@ backtest <- function(fit, data, varname,
     p_obs <- n_exc / n_tot
     bt    <- stats::binom.test(n_exc, n_tot, p = p_teo)
     data.frame(
+      approach     = a,
       TR           = TR,
       expected     = round(p_teo, 4L),
       observed     = round(p_obs, 4L),
@@ -362,14 +416,14 @@ backtest <- function(fit, data, varname,
       not_rejected = bt$p.value > 0.05,
       calibrated   = bt$p.value > 0.05
     )
-  })
-  df_binom <- do.call(rbind, Filter(Negate(is.null), binom_list))
+  }))
+  df_binom <- do.call(rbind, unlist(binom_list, recursive = FALSE))
 
   if (verbose) {
     message("\n Nominal binomial rate comparisons")
     for (i in seq_len(nrow(df_binom))) {
-      message(sprintf("  T=%3d | expected=%.3f | observed=%.3f (%d/%d) | p=%.3f %s",
-                      df_binom$TR[i], df_binom$expected[i],
+      message(sprintf("  [%s] T=%3d | expected=%.3f | observed=%.3f (%d/%d) | p=%.3f %s",
+                      df_binom$approach[i], df_binom$TR[i], df_binom$expected[i],
                       df_binom$observed[i], df_binom$n_exceedances[i],
                       df_binom$n_total[i], df_binom$p_value[i],
                       if (is.na(df_binom$not_rejected[i])) "not estimable" else
@@ -377,15 +431,17 @@ backtest <- function(fit, data, varname,
     }
   }
 
-  df_ev  <- df_results[df_results$has_event & !is.na(df_results$F_ann), ]
-  ks_res <- NULL
-  if (nrow(df_ev) >= 5L) {
+  ks_list <- lapply(approaches, function(a) {
+    f_col <- paste0("F_ann_", a)
+    df_ev <- df_results[df_results$has_event & !is.na(df_results[[f_col]]), ]
+    if (nrow(df_ev) < 5L) return(NULL)
     pit_jittered <- .with_preserved_seed(
       as.integer(seed) + 100000L,
-      jitter(df_ev$F_ann, factor = 1e-6)
+      jitter(df_ev[[f_col]], factor = 1e-6)
     )
     ks <- stats::ks.test(pit_jittered, "punif")
-    ks_res <- data.frame(
+    out <- data.frame(
+      approach    = a,
       n           = nrow(df_ev),
       D_statistic = round(as.numeric(ks$statistic), 4L),
       p_value     = round(ks$p.value, 4L),
@@ -394,11 +450,14 @@ backtest <- function(fit, data, varname,
     )
     if (verbose)
       message(sprintf(
-        "\n Exploratory tail-PIT KS comparison \n  n=%d | D=%.4f | p=%.4f | %s",
-        ks_res$n, ks_res$D_statistic, ks_res$p_value,
-        if (ks_res$not_rejected) "no nominal departure detected" else "nominal departure detected"
+        "\n Exploratory tail-PIT KS comparison [%s]\n  n=%d | D=%.4f | p=%.4f | %s",
+        a, out$n, out$D_statistic, out$p_value,
+        if (out$not_rejected) "no nominal departure detected" else "nominal departure detected"
       ))
-  }
+    out
+  })
+  ks_res <- if (all(vapply(ks_list, is.null, logical(1L)))) NULL else
+    do.call(rbind, ks_list)
 
   invisible(list(
     results     = df_results,

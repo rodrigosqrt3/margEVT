@@ -30,6 +30,8 @@
 #' @param penalty_weights Optional coordinate weights (see \code{fit_nhpp}).
 #' @param lambda_grid Optional user grid of base penalties.
 #' @param grad_tol KKT tolerance (see \code{fit_nhpp}).
+#' @param shape_lower Lower bound on the shape parameter (see \code{fit_nhpp}).
+#' @param parscale Optional parameter scales passed to \code{optim()}.
 #'
 #' @return A list with \code{lambda} (named vector \code{c(mu=, sigma=, xi=)}),
 #'   \code{par} (smooth path solution at the selected lambda), and
@@ -46,7 +48,9 @@
                                verbose         = TRUE,
                                penalty_weights = NULL,
                                lambda_grid     = NULL,
-                               grad_tol        = 5e-4) {
+                               grad_tol        = 5e-4,
+                               shape_lower     = -Inf,
+                               parscale        = NULL) {
 
   lambda_scaling <- match.arg(lambda_scaling)
 
@@ -102,7 +106,9 @@
                           obs_per_year    = obs_per_year,
                           penalty_weights = penalty_weights,
                           grad_tol        = grad_tol,
-                          active_tol      = active_tol)
+                          active_tol      = active_tol,
+                          shape_lower     = shape_lower,
+                          parscale        = parscale)
     if (!res$converged || !is.finite(res$nllh_raw))
       return(list(bic = NA_real_, par_smooth = init_par,
                   par_oper = init_par, k_active = NA_integer_,

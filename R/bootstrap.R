@@ -111,11 +111,55 @@
                fit$adaptive_gamma,
              init            = init,
              grad_tol        = if (is.null(fit$grad_tol)) 5e-4 else fit$grad_tol,
+             shape_lower     = if (is.null(fit$shape_lower)) -Inf else
+               fit$shape_lower,
              maxit           = 5000L,
              calc_hessian    = FALSE,
+             scaling         = if (is.null(fit$scaling)) "none" else
+               fit$scaling,
              verbose         = FALSE),
     error = function(e) NULL
   )
+}
+
+#' Refit an NHPP model on new data with the same specification
+#'
+#' Refits \code{fit} on \code{data} with the same design (location, scale and
+#' shape covariates, free columns), penalty, activity tolerance, KKT
+#' tolerance and shape bound. By default the penalty level and the penalty
+#' weights are those of \code{fit}; \code{lambda = "bic"} re-selects the
+#' penalty and \code{penalty_weights = "adaptive"} recomputes adaptive
+#' weights on \code{data} (as needed, e.g., in walk-forward validation).
+#'
+#' @param fit An \code{nhpp_fit} object.
+#' @param data Data frame with column \code{y} and every covariate of
+#'   \code{fit}.
+#' @param lambda Penalty level: the fitted one (default) or \code{"bic"}.
+#' @param penalty_weights \code{NULL} keeps the weights of \code{fit};
+#'   \code{"adaptive"} recomputes them; a numeric vector supplies new ones.
+#' @param init Starting values. Default: the estimate of \code{fit}.
+#'
+#' @return An \code{nhpp_fit} object, or \code{NULL} if the refit failed.
+#'   Check \code{$converged} (KKT certification) before using it.
+#'
+#' @examples
+#' set.seed(1)
+#' df <- data.frame(x = rnorm(1500))
+#' df$y <- 10 + df$x + rexp(1500, 1 / 3)
+#' fit <- fit_nhpp(df, threshold = 18, loc_vars = "x", penalty = "none",
+#'                 verbose = FALSE)
+#' df2 <- df; df2$y <- 10 + df2$x + rexp(1500, 1 / 3)
+#' coef(refit_nhpp(fit, df2))
+#'
+#' @export
+refit_nhpp <- function(fit, data, lambda = fit$lambda, penalty_weights = NULL,
+                       init = fit$par) {
+  if (!inherits(fit, "nhpp_fit"))
+    stop("refit_nhpp: `fit` must be an nhpp_fit object.")
+  if (!is.data.frame(data) || !"y" %in% names(data))
+    stop("refit_nhpp: `data` must be a data frame with a column `y`.")
+  .refit_boot(data, fit, init = init, lambda = lambda,
+              penalty_weights = penalty_weights)
 }
 
 # -----------------------------------------------------------------------------
@@ -126,7 +170,7 @@
 # Internal — not exported.
 # -----------------------------------------------------------------------------
 .boot_replicates <- function(fit, data, R, seed, cores, stat, n_stat,
-                             fun_name) {
+                             fun_name, occurrence = "fixed") {
   thr     <- fit$threshold
   exc_idx <- which(data$y > thr)
   if (length(exc_idx) < 5L)
@@ -137,13 +181,26 @@
   # Fail early, in the calling process, when the GPD scale is invalid.
   .gpd_scale_at_threshold(params$mu, params$sigma, params$xi, thr, exc_idx)
 
+  # occurrence = "simulated": each period has an exceedance with probability
+  # 1 - exp(-tau_t / n_y), the point-process probability of at least one point
+  # above u, so the number and timing of exceedances are resampled too.
+  p_occ <- if (occurrence == "simulated") {
+    tau <- .tail_measure_at_level(thr, params$mu, params$sigma, params$xi)
+    if (any(!is.finite(tau)))
+      stop(sprintf("%s: the threshold lies outside the fitted support.", fun_name))
+    -expm1(-tau / fit$obs_per_year)
+  } else NULL
+
   streams <- .rng_streams(R, seed)
   one_replicate <- function(stream) .with_rng_stream(stream, {
+    idx <- if (is.null(p_occ)) exc_idx else
+      which(stats::runif(length(p_occ)) < p_occ)
+    if (length(idx) < 5L) return(NULL)
     excess_sim         <- .simulate_exceedances(params$mu, params$sigma,
-                                                params$xi, thr, exc_idx)
+                                                params$xi, thr, idx)
     df_boot            <- data
     df_boot$y          <- thr - stats::runif(nrow(data), 0.1, 5)
-    df_boot$y[exc_idx] <- thr + excess_sim
+    df_boot$y[idx]     <- thr + excess_sim
     fit_b <- .refit_boot(df_boot, fit)
     if (is.null(fit_b) || !isTRUE(fit_b$converged)) return(NULL)
     stat(fit_b, df_boot)
@@ -206,6 +263,12 @@
 #' @param level Numeric. Confidence level. Default \code{0.95}.
 #' @param seed Seed of the replicate streams, or \code{NULL} to derive it
 #'   from the current random-number state. Default \code{42L}.
+#' @param occurrence \code{"fixed"} (default) keeps the observed number and
+#'   timing of exceedances and resamples only their sizes (a bootstrap
+#'   conditional on the occurrence pattern); \code{"simulated"} draws, in
+#'   every period, an exceedance with probability
+#'   \eqn{1 - \exp(-\tau_t / n_y)} under the fitted model before drawing its
+#'   size, so the uncertainty about the exceedance rate is also propagated.
 #' @param cores Positive integer number of worker processes. Default \code{1L}.
 #' @param verbose Logical. Print progress. Default \code{TRUE}.
 #'
@@ -236,10 +299,12 @@ bootstrap_rl <- function(fit, data,
                          marginalize_args = list(),
                          level            = 0.95,
                          seed             = 42L,
+                         occurrence       = c("fixed", "simulated"),
                          cores            = 1L,
                          verbose          = TRUE) {
 
   .validate_boot_inputs(fit, data, R, level, seed, "bootstrap_rl")
+  occurrence <- match.arg(occurrence)
   if (!is.character(approach) || length(approach) != 1L ||
       !approach %in% c("A", "B", "C"))
     stop("bootstrap_rl: `approach` must be one of 'A', 'B', 'C'.")
@@ -285,7 +350,7 @@ bootstrap_rl <- function(fit, data,
                     R, approach, level * 100, cores))
 
   boot_mat <- .boot_replicates(fit, data, R, seed, cores, rl_of,
-                               length(TRs), "bootstrap_rl")
+                               length(TRs), "bootstrap_rl", occurrence)
   colnames(boot_mat) <- paste0("T", TRs)
 
   if (verbose)
@@ -346,10 +411,12 @@ bootstrap_coef <- function(fit, data,
                            R       = 200L,
                            level   = 0.95,
                            seed    = 42L,
+                           occurrence = c("fixed", "simulated"),
                            cores   = 1L,
                            verbose = TRUE) {
 
   .validate_boot_inputs(fit, data, R, level, seed, "bootstrap_coef")
+  occurrence <- match.arg(occurrence)
   cores <- .validate_cores(cores, "bootstrap_coef")
   R <- as.integer(R)
   par_names <- names(fit$par)
@@ -363,7 +430,8 @@ bootstrap_coef <- function(fit, data,
     par_b[par_names]
   }
   boot_coef <- .boot_replicates(fit, data, R, seed, cores, coef_of,
-                                length(par_names), "bootstrap_coef")
+                                length(par_names), "bootstrap_coef",
+                                occurrence)
   colnames(boot_coef) <- par_names
 
   if (verbose)
@@ -387,4 +455,125 @@ bootstrap_coef <- function(fit, data,
   }))
   attr(out, "replicates") <- boot_coef
   out
+}
+
+
+# -----------------------------------------------------------------------------
+# bootstrap_nhpp()
+# -----------------------------------------------------------------------------
+
+#' Parametric bootstrap for return levels and coefficients in one pass
+#'
+#' Runs the conditional parametric bootstrap of \code{\link{bootstrap_rl}}
+#' and \code{\link{bootstrap_coef}} with a single set of \code{R} refits,
+#' returning percentile intervals for the return levels (one
+#' marginalization approach) and for every operational coefficient. Use it
+#' instead of calling both functions, which would refit twice.
+#'
+#' @inheritParams bootstrap_rl
+#' @param TRs Return periods, or \code{NULL} for coefficient intervals only.
+#'
+#' @return A list with \code{rl} (data frame as in \code{bootstrap_rl}, or
+#'   \code{NULL}), \code{coef} (data frame as in \code{bootstrap_coef}, with
+#'   the share of replicates at zero in \code{p_zero}), and the replicate
+#'   matrices \code{rl_replicates} and \code{coef_replicates}.
+#'
+#' @seealso \code{\link{bootstrap_rl}}, \code{\link{bootstrap_coef}}
+#'
+#' @examples
+#' set.seed(1)
+#' df <- data.frame(x = rnorm(1500), year = rep(1:30, each = 50))
+#' df$y <- 10 + df$x + rexp(1500, 1 / 3)
+#' fit <- fit_nhpp(df, threshold = 18, loc_vars = "x", penalty = "none",
+#'                 obs_per_year = 50, verbose = FALSE)
+#' \donttest{
+#' b <- bootstrap_nhpp(fit, df, TRs = c(10, 50), R = 30, verbose = FALSE)
+#' b$rl
+#' b$coef
+#' }
+#'
+#' @export
+bootstrap_nhpp <- function(fit, data,
+                           TRs              = c(2, 5, 10, 20, 50, 100),
+                           R                = 200L,
+                           approach         = "C",
+                           marginalize_args = list(),
+                           level            = 0.95,
+                           seed             = 42L,
+                           occurrence       = c("fixed", "simulated"),
+                           cores            = 1L,
+                           verbose          = TRUE) {
+
+  .validate_boot_inputs(fit, data, R, level, seed, "bootstrap_nhpp")
+  occurrence <- match.arg(occurrence)
+  # Evaluate every argument here: the replicate closure runs on worker
+  # processes, where unevaluated promises referring to the caller's
+  # environment cannot be resolved.
+  force(marginalize_args); force(TRs); force(approach)
+  if (!is.list(marginalize_args))
+    stop("bootstrap_nhpp: `marginalize_args` must be a list.")
+  if (!is.null(TRs)) {
+    if (!is.character(approach) || length(approach) != 1L ||
+        !approach %in% c("A", "B", "C"))
+      stop("bootstrap_nhpp: `approach` must be one of 'A', 'B', 'C'.")
+    if (!is.numeric(TRs) || length(TRs) < 1L ||
+        any(!is.finite(TRs)) || any(TRs <= 1))
+      stop("bootstrap_nhpp: `TRs` must contain finite return periods greater than 1.")
+  }
+  cores <- .validate_cores(cores, "bootstrap_nhpp")
+  R <- as.integer(R)
+  par_names <- names(fit$par)
+  k <- length(TRs)
+
+  rl_of <- function(f, d) {
+    if (k == 0L) return(numeric(0L))
+    args <- utils::modifyList(marginalize_args,
+                              list(fit = f, data = d, TRs = TRs,
+                                   approaches = approach))
+    res <- tryCatch(do.call(marginalize, args), error = function(e) NULL)
+    if (is.null(res)) return(rep(NA_real_, k))
+    res$RL[match(TRs, res$TR)]
+  }
+  stat <- function(f, d) {
+    p <- if (is.null(f$par_oper)) f$par else f$par_oper
+    c(rl_of(f, d), p[par_names])
+  }
+
+  if (verbose)
+    message(sprintf("bootstrap_nhpp: R=%d | approach=%s | level=%.0f%% | cores=%d",
+                    R, approach, level * 100, cores))
+  mat <- .boot_replicates(fit, data, R, seed, cores, stat,
+                          k + length(par_names), "bootstrap_nhpp", occurrence)
+  rl_mat   <- mat[, seq_len(k), drop = FALSE]
+  coef_mat <- mat[, k + seq_along(par_names), drop = FALSE]
+  colnames(coef_mat) <- par_names
+  if (k > 0L) colnames(rl_mat) <- paste0("T", TRs)
+  if (verbose)
+    message(sprintf("  %d / %d replicates succeeded",
+                    sum(stats::complete.cases(coef_mat)), R))
+
+  a <- (1 - level) / 2
+  q <- function(v, p, digits) round(unname(stats::quantile(v, p)), digits)
+  rl <- if (k > 0L) {
+    est <- rl_of(fit, data)
+    do.call(rbind, lapply(seq_len(k), function(i) {
+      v <- stats::na.omit(rl_mat[, i])
+      data.frame(TR = TRs[i], RL_est = round(est[i], 4L),
+                 CI_low  = if (length(v) > 0L) q(v, a, 4L) else NA_real_,
+                 CI_high = if (length(v) > 0L) q(v, 1 - a, 4L) else NA_real_,
+                 n_ok = length(v))
+    }))
+  } else NULL
+  est <- if (is.null(fit$par_oper)) fit$par else fit$par_oper
+  coef <- do.call(rbind, lapply(par_names, function(nm) {
+    v <- stats::na.omit(coef_mat[, nm])
+    data.frame(parameter = nm, estimate = round(unname(est[nm]), 5L),
+               CI_low  = if (length(v) >= 5L) q(v, a, 5L) else NA_real_,
+               CI_high = if (length(v) >= 5L) q(v, 1 - a, 5L) else NA_real_,
+               p_zero  = if (length(v)) mean(v == 0) else NA_real_,
+               n_ok = length(v), row.names = NULL)
+  }))
+  list(rl = rl, coef = coef,
+       rl_replicates = if (k > 0L) rl_mat else NULL,
+       coef_replicates = coef_mat)
 }

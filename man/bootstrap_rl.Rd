@@ -13,6 +13,7 @@ bootstrap_rl(
   marginalize_args = list(),
   level = 0.95,
   seed = 42L,
+  occurrence = c("fixed", "simulated"),
   cores = 1L,
   verbose = TRUE
 )
@@ -38,6 +39,13 @@ replicate: \code{"A"}, \code{"B"}, or \code{"C"}. Default \code{"C"}.}
 
 \item{seed}{Seed of the replicate streams, or \code{NULL} to derive it
 from the current random-number state. Default \code{42L}.}
+
+\item{occurrence}{\code{"fixed"} (default) keeps the observed number and
+timing of exceedances and resamples only their sizes (a bootstrap
+conditional on the occurrence pattern); \code{"simulated"} draws, in
+every period, an exceedance with probability
+\eqn{1 - \exp(-\tau_t / n_y)} under the fitted model before drawing its
+size, so the uncertainty about the exceedance rate is also propagated.}
 
 \item{cores}{Positive integer number of worker processes. Default \code{1L}.}
 

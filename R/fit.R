@@ -27,7 +27,9 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
                          converged, n_exc,
                          penalty_weights = NULL, weights_source = "none",
                          kkt = NA_real_, path = NULL, y = NULL,
-                         grad_tol = 5e-4, adaptive_gamma = 1) {
+                         grad_tol = 5e-4, adaptive_gamma = 1,
+                         shape_lower = -Inf, shape_at_bound = FALSE,
+                         scaling = "none") {
   structure(
     list(
       par             = par,
@@ -55,7 +57,10 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
       path            = path,
       y               = y,
       grad_tol        = grad_tol,
-      adaptive_gamma  = adaptive_gamma
+      adaptive_gamma  = adaptive_gamma,
+      shape_lower     = shape_lower,
+      shape_at_bound  = shape_at_bound,
+      scaling         = scaling
     ),
     class = "nhpp_fit"
   )
@@ -70,6 +75,33 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
     if (isTRUE(penalize_shape)) p_mu + p_sig + dm$idx_pen_xi else integer(0L))
 }
 
+# Parameter scales for optim(): s_k = 1 / sqrt(|H_kk|), with H_kk the
+# diagonal curvature of the unpenalized negative log-likelihood at `par`,
+# from one forward difference of the analytical gradient per coordinate.
+# BFGS starts from the identity in the scaled coordinates, so a step of the
+# right size is tried first instead of being cut back many times in the line
+# search. Returns NULL (no scaling) if the curvature cannot be computed.
+.par_scale <- function(par, dm, y, threshold, obs_per_year,
+                       shape_lower = -Inf) {
+  ev <- function(p) .nhpp_eval(p, dm, y, threshold, obs_per_year, grad = TRUE,
+                               shape_lower = shape_lower)
+  e0 <- ev(par)
+  if (!is.finite(e0$value) || e0$value >= 1e9 || any(!is.finite(e0$grad)))
+    return(NULL)
+  d <- vapply(seq_along(par), function(k) {
+    h <- 1e-4 * max(1, abs(par[k]))
+    p <- par
+    p[k] <- p[k] + h
+    e <- ev(p)
+    if (!is.finite(e$value) || e$value >= 1e9) return(NA_real_)
+    (e$grad[k] - e0$grad[k]) / h
+  }, numeric(1L))
+  d <- abs(d)
+  if (any(!is.finite(d)) || all(d == 0)) return(NULL)
+  d <- pmax(d, 1e-10 * max(d))
+  1 / sqrt(d)
+}
+
 # -----------------------------------------------------------------------------
 # .warmstart() - proximal coordinate warm start
 # Soft thresholds use the coordinate-specific penalty lambda_k * alpha_k, so
@@ -77,7 +109,8 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
 # -----------------------------------------------------------------------------
 .warmstart <- function(init, dm, y, threshold, lambda, alpha,
                        penalize_shape, n_passes = 5L, step = 0.01,
-                       obs_per_year = 365.25, penalty_weights = NULL) {
+                       obs_per_year = 365.25, penalty_weights = NULL,
+                       shape_lower = -Inf) {
 
   if (all(lambda == 0)) return(init)
 
@@ -85,7 +118,8 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
   idx <- which(pv$lam > 0)
   if (length(idx) == 0L) return(init)
 
-  obj <- .objective_factory(dm, y, threshold, pv, obs_per_year = obs_per_year)
+  obj <- .objective_factory(dm, y, threshold, pv, obs_per_year = obs_per_year,
+                            shape_lower = shape_lower)
   par <- init
   f0  <- obj$fn(par)
 
@@ -109,15 +143,18 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
 # -----------------------------------------------------------------------------
 # .fit_at_lambda() - internal workhorse
 # Fits the model at a fixed lambda. BFGS is tried first; if the KKT check
-# fails, L-BFGS-B and a final BFGS restart are attempted. Convergence is
-# declared only when the KKT violation (scaled by the exceedance count) is
-# below `grad_tol`.
+# fails, L-BFGS-B and a final BFGS restart are attempted. With a finite
+# `shape_lower` (and a shape design with at most one covariate), the
+# fallbacks are L-BFGS-B runs in the box parametrization of the shape bound
+# (see .shape_bound_map()). Convergence is declared only when the KKT
+# violation (scaled by the exceedance count) is below `grad_tol`.
 # -----------------------------------------------------------------------------
 .fit_at_lambda <- function(dm, y, threshold, lambda, alpha,
                            penalize_shape, init = NULL,
                            maxit = 10000L, calc_hessian = FALSE,
                            obs_per_year = 365.25, penalty_weights = NULL,
-                           grad_tol = 5e-4, active_tol = 1e-2) {
+                           grad_tol = 5e-4, active_tol = 1e-2,
+                           shape_lower = -Inf, parscale = NULL) {
 
   p_mu  <- ncol(dm$X_mu)
   p_sig <- ncol(dm$X_sigma)
@@ -133,31 +170,140 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
   }
 
   pv  <- .penalty_vectors(dm, lambda, alpha, penalize_shape, penalty_weights)
-  obj <- .objective_factory(dm, y, threshold, pv, obs_per_year = obs_per_year)
+  obj <- .objective_factory(dm, y, threshold, pv, obs_per_year = obs_per_year,
+                            shape_lower = shape_lower)
+  bmap <- .shape_bound_map(dm, shape_lower)
   n_exc   <- sum(y > threshold)
   tol_abs <- grad_tol * max(1, n_exc)
+
+  finish <- function(res) {
+    if (is.null(res) || any(!is.finite(res$par)) || !is.finite(res$value) ||
+        res$value >= 1e9) return(NULL)
+    res$kkt <- .kkt_violation_bounded(res$par, obj$gr(res$par), pv,
+                                      active_tol, bmap)
+    res
+  }
+
+  # Parameter scaling for optim() (see .par_scale()). In the box
+  # parametrization the bounded coordinates are shape values, which take the
+  # scale of the shape intercept.
+  ps_q <- parscale
+  if (!is.null(parscale) && !is.null(bmap)) ps_q[bmap$idx] <- parscale[bmap$idx[1L]]
+  with_scale <- function(control, ps) {
+    if (!is.null(ps)) control$parscale <- ps
+    control
+  }
 
   run <- function(start, method) {
     control <- if (method == "BFGS")
       list(maxit = maxit, reltol = 1e-10) else
         list(maxit = maxit, factr = 1e7, pgtol = 0)
-    res <- tryCatch(
+    control <- with_scale(control, parscale)
+    finish(tryCatch(
       .optim_nhpp(start, obj$fn, gr = obj$gr, method = method,
                   control = control),
+      error = function(e) NULL))
+  }
+
+  # L-BFGS-B in the box parametrization v = A beta_xi >= shape_lower.
+  run_bounded <- function(start) {
+    S <- bmap$idx
+    to_beta <- function(q) { q[S] <- drop(bmap$Ainv %*% q[S]); q }
+    q0 <- start
+    q0[S] <- pmax(drop(bmap$A %*% start[S]), bmap$lower)
+    lower <- rep(-Inf, length(start))
+    lower[S] <- bmap$lower
+    res <- tryCatch(
+      .optim_nhpp(q0, function(q) obj$fn(to_beta(q)),
+                  gr = function(q) {
+                    g <- obj$gr(to_beta(q))
+                    g[S] <- drop(crossprod(bmap$Ainv, g[S]))
+                    g
+                  },
+                  method = "L-BFGS-B", lower = lower,
+                  control = with_scale(list(maxit = maxit, factr = 1e3,
+                                            pgtol = 0), ps_q)),
       error = function(e) NULL)
-    if (is.null(res) || any(!is.finite(res$par)) || !is.finite(res$value) ||
-        res$value >= 1e9) return(NULL)
-    res$kkt <- .kkt_violation(res$par, obj$gr(res$par), pv, active_tol)
-    res
+    if (!is.null(res)) res$par <- stats::setNames(to_beta(res$par), names(start))
+    finish(res)
+  }
+
+  # Active-set solver for the shape bound: the bounded coordinates v at their
+  # bound are fixed there and all other coordinates are optimized by BFGS
+  # (which handles the smoothed L1 kink far better than L-BFGS-B). The active
+  # set is then updated - a bound coordinate with a negative derivative is
+  # released, a free one that reached the bound is added - and the problem
+  # re-solved, at most four times.
+  run_active <- function(start) {
+    S <- bmap$idx
+    to_beta <- function(q) { q[S] <- drop(bmap$Ainv %*% q[S]); q }
+    q <- start
+    q[S] <- pmax(drop(bmap$A %*% start[S]), bmap$lower)
+    act <- q[S] - bmap$lower < 1e-6
+    best <- NULL
+    restarted <- FALSE
+    for (it in seq_len(4L)) {
+      q[S][act] <- bmap$lower
+      free <- setdiff(seq_along(q), S[act])
+      full <- function(z) { qq <- q; qq[free] <- z; qq }
+      fn <- function(z) obj$fn(to_beta(full(z)))
+      gr <- function(z) {
+        g <- obj$gr(to_beta(full(z)))
+        g[S] <- drop(crossprod(bmap$Ainv, g[S]))
+        g[free]
+      }
+      r <- tryCatch(.optim_nhpp(q[free], fn, gr, method = "BFGS",
+                                control = with_scale(
+                                  list(maxit = maxit, reltol = 1e-10),
+                                  if (is.null(ps_q)) NULL else ps_q[free])),
+                    error = function(e) NULL)
+      if (is.null(r) || !is.finite(r$value) || r$value >= 1e9) break
+      q[free] <- r$par
+      cand <- finish(list(par = stats::setNames(to_beta(q), names(start)),
+                          value = r$value, convergence = r$convergence))
+      if (!is.null(cand) && (is.null(best) || cand$kkt < best$kkt)) best <- cand
+      if (ok(cand)) break
+      # multipliers at the subgradient that best satisfies the conditions
+      pb <- to_beta(q)
+      h <- .shape_kkt(pb, obj$gr(pb), pv, active_tol, bmap)$h
+      release <- act & h < 0
+      add <- !act & (q[S] - bmap$lower < 1e-6)
+      if (!any(release) && !any(add)) {
+        # same active set: one BFGS restart from here (fresh Hessian) to
+        # polish a solution that stopped just short of the KKT tolerance
+        if (isTRUE(restarted)) break
+        restarted <- TRUE
+      }
+      act <- (act & !release) | add
+    }
+    best
   }
 
   ok <- function(res) !is.null(res) && res$kkt <= tol_abs
-  res1 <- run(init, "BFGS")
-  res2 <- res3 <- NULL
+  # A start at (or numerically on) the shape bound - the usual case along a
+  # regularization path or in bootstrap refits once the bound is active -
+  # goes straight to the active-set solver: unconstrained BFGS would spend
+  # its iterations against the barrier before failing the KKT check.
+  at_bound <- function(p) !is.null(bmap) &&
+    any(drop(bmap$A %*% p[bmap$idx]) - bmap$lower < 1e-6)
+  res1 <- res2 <- res3 <- NULL
+  if (at_bound(init)) {
+    res1 <- run_active(init)
+  } else {
+    res1 <- run(init, "BFGS")
+  }
   if (!ok(res1)) {
-    res2 <- run(if (!is.null(res1)) res1$par else init, "L-BFGS-B")
-    if (!ok(res2) && !is.null(res2))
-      res3 <- run(res2$par, "BFGS")
+    start2 <- if (!is.null(res1)) res1$par else init
+    if (is.null(bmap)) {
+      # BFGS restart first (fresh Hessian approximation), then L-BFGS-B
+      res2 <- if (!is.null(res1)) run(start2, "BFGS") else NULL
+      if (!ok(res2))
+        res3 <- run(if (!is.null(res2)) res2$par else start2, "L-BFGS-B")
+    } else {
+      res2 <- if (at_bound(init)) run_bounded(start2) else run_active(start2)
+      if (!ok(res2))
+        res3 <- run_bounded(if (!is.null(res2)) res2$par else start2)
+    }
   }
   attempts <- Filter(Negate(is.null), list(res1, res2, res3))
 
@@ -195,12 +341,14 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
                               obs_per_year, gamma = 1, floor_abs = 1e-4,
                               maxit = 10000L, grad_tol = 5e-4,
                               active_tol = 1e-2,
-                              ridge_lambdas = c(0.1, 1, 10)) {
+                              ridge_lambdas = c(0.1, 1, 10),
+                              shape_lower = -Inf, parscale = NULL) {
   pen_idx <- .penalized_index(dm, penalize_shape)
   base <- .fit_at_lambda(dm, y, threshold, lambda = 0, alpha = 1,
                          penalize_shape = penalize_shape, init = init,
                          maxit = maxit, obs_per_year = obs_per_year,
-                         grad_tol = grad_tol, active_tol = active_tol)
+                         grad_tol = grad_tol, active_tol = active_tol,
+                         shape_lower = shape_lower, parscale = parscale)
   source <- "mle"
   if (!isTRUE(base$converged)) {
     source <- NA_character_
@@ -208,7 +356,8 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
       base <- .fit_at_lambda(dm, y, threshold, lambda = lr, alpha = 0,
                              penalize_shape = penalize_shape, init = init,
                              maxit = maxit, obs_per_year = obs_per_year,
-                             grad_tol = grad_tol, active_tol = active_tol)
+                             grad_tol = grad_tol, active_tol = active_tol,
+                             shape_lower = shape_lower, parscale = parscale)
       if (isTRUE(base$converged)) {
         source <- paste0("ridge(lambda=", lr, ")")
         break
@@ -293,9 +442,27 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
 #' @param init Optional numeric starting vector, one entry per parameter.
 #' @param grad_tol Positive tolerance for the KKT violation divided by the
 #'   number of exceedances. Default \code{5e-4}.
+#' @param shape_lower Lower bound imposed on the shape parameter
+#'   \eqn{\xi_t} at every observation, or \code{-Inf} for no bound. The
+#'   default \code{-0.5} restricts estimation to the region in which the
+#'   maximum likelihood estimator has its usual asymptotic properties
+#'   (Smith, 1985); below \eqn{-1} the point-process likelihood is unbounded.
+#'   With a shape design made of an intercept and at most one covariate the
+#'   bound is handled exactly (box-constrained optimization, KKT conditions
+#'   with multipliers); with more shape covariates it acts as a barrier.
+#'   Whether the bound is active at the solution is stored in
+#'   \code{shape_at_bound}.
 #' @param maxit Integer. Maximum optimizer iterations. Default \code{10000L}.
 #' @param calc_hessian Logical. Compute the Hessian of the penalized
 #'   objective at the solution? Default \code{FALSE}.
+#' @param scaling Parameter scaling for the optimizer: \code{"auto"}
+#'   (default) passes \code{optim()} the scales \eqn{1/\sqrt{|H_{kk}|}}, with
+#'   \eqn{H_{kk}} the diagonal curvature of the unpenalized negative
+#'   log-likelihood at the starting values, computed once per call and used
+#'   along the whole regularization path; \code{"none"} reproduces the
+#'   unscaled optimization of earlier versions. Scaling changes the path of the
+#'   optimizer, not the problem: every reported fit satisfies the same KKT
+#'   conditions, and estimates differ only within the optimizer tolerance.
 #' @param verbose Logical. Print progress during BIC grid search and
 #'   convergence warnings. Default \code{TRUE}.
 #'
@@ -345,8 +512,10 @@ fit_nhpp <- function(df, threshold,
                      lambda_grid     = NULL,
                      init            = NULL,
                      grad_tol        = 5e-4,
+                     shape_lower     = -0.5,
                      maxit           = 10000L,
                      calc_hessian    = FALSE,
+                     scaling         = c("auto", "none"),
                      verbose         = TRUE) {
 
   if (!is.data.frame(df))
@@ -368,6 +537,9 @@ fit_nhpp <- function(df, threshold,
   if (!is.numeric(grad_tol) || length(grad_tol) != 1L ||
       !is.finite(grad_tol) || grad_tol <= 0)
     stop("fit_nhpp: `grad_tol` must be a single positive numeric value.")
+  if (!is.numeric(shape_lower) || length(shape_lower) != 1L ||
+      is.na(shape_lower) || shape_lower >= 0)
+    stop("fit_nhpp: `shape_lower` must be a single negative value or -Inf.")
   if (!is.numeric(adaptive_gamma) || length(adaptive_gamma) != 1L ||
       !is.finite(adaptive_gamma) || adaptive_gamma <= 0)
     stop("fit_nhpp: `adaptive_gamma` must be a single positive numeric value.")
@@ -433,10 +605,16 @@ fit_nhpp <- function(df, threshold,
     stop("fit_nhpp: `lambda` must be a non-negative numeric value or \"bic\".")
   }
 
+  scaling <- match.arg(scaling)
   dm    <- build_design_matrices(df, loc_vars, scale_vars, shape_vars, free_vars)
   design_values <- unlist(dm[c("X_mu", "X_sigma", "X_xi")], use.names = FALSE)
   if (any(!is.finite(design_values)))
     stop("fit_nhpp: model covariates must contain only finite numeric values.")
+  # With finite design matrices, matprod = "default" only adds a NaN scan of
+  # the whole matrix before each BLAS product (about 40% of a product on daily
+  # records); "blas" gives the same result without it. Restored on exit.
+  op_matprod <- options(matprod = "blas")
+  on.exit(options(op_matprod), add = TRUE)
   p_mu  <- ncol(dm$X_mu)
   p_sig <- ncol(dm$X_sigma)
   p_xi  <- ncol(dm$X_xi)
@@ -464,6 +642,8 @@ fit_nhpp <- function(df, threshold,
   }
   init <- as.numeric(init)
   names(init) <- par_names
+  parscale <- if (scaling == "auto")
+    .par_scale(init, dm, y, threshold, obs_per_year, shape_lower) else NULL
 
   # ---- penalty weights -------------------------------------------------------
   weights_source <- "none"
@@ -476,7 +656,9 @@ fit_nhpp <- function(df, threshold,
       aw <- .adaptive_weights(dm, y, threshold, init, penalize_shape,
                               obs_per_year, gamma = adaptive_gamma,
                               maxit = maxit, grad_tol = grad_tol,
-                              active_tol = active_tol)
+                              active_tol = active_tol,
+                              shape_lower = shape_lower,
+                              parscale = parscale)
       pen_weights    <- aw$weights
       weights_source <- paste0("adaptive: ", aw$source)
       if (verbose)
@@ -519,7 +701,9 @@ fit_nhpp <- function(df, threshold,
       verbose         = verbose,
       penalty_weights = pen_weights,
       lambda_grid     = lambda_grid,
-      grad_tol        = grad_tol
+      grad_tol        = grad_tol,
+      shape_lower     = shape_lower,
+      parscale        = parscale
     )
     lambda_resolved <- sel$lambda
     start <- sel$par
@@ -531,7 +715,8 @@ fit_nhpp <- function(df, threshold,
   } else if (any(lambda_resolved > 0)) {
     start <- .warmstart(init, dm, y, threshold, lambda_resolved, alpha,
                         penalize_shape, obs_per_year = obs_per_year,
-                        penalty_weights = pen_weights)
+                        penalty_weights = pen_weights,
+                        shape_lower = shape_lower)
   }
 
   res <- .fit_at_lambda(dm, y, threshold,
@@ -544,7 +729,9 @@ fit_nhpp <- function(df, threshold,
                         obs_per_year    = obs_per_year,
                         penalty_weights = pen_weights,
                         grad_tol        = grad_tol,
-                        active_tol      = active_tol)
+                        active_tol      = active_tol,
+                        shape_lower     = shape_lower,
+                        parscale        = parscale)
 
   if (!res$converged && verbose)
     warning("fit_nhpp: optimizer did not converge (KKT check failed).")
@@ -593,7 +780,11 @@ fit_nhpp <- function(df, threshold,
     path            = path,
     y               = y,
     grad_tol        = grad_tol,
-    adaptive_gamma  = adaptive_gamma
+    adaptive_gamma  = adaptive_gamma,
+    shape_lower     = shape_lower,
+    shape_at_bound  = is.finite(shape_lower) &&
+      min(fitted_from(par_hat)$xi) - shape_lower < 1e-7,
+    scaling         = scaling
   )
 }
 
@@ -630,6 +821,8 @@ print.nhpp_fit <- function(x, ...) {
     cat(sprintf("  Weights      : %s\n",  x$weights_source))
   cat(sprintf("  Alpha        : %s\n",    .format_lambda(x$alpha)))
   cat(sprintf("  Converged    : %s\n",    x$converged))
+  if (isTRUE(x$shape_at_bound))
+    cat(sprintf("  Shape bound  : active (xi >= %.3g)\n", x$shape_lower))
   cat(sprintf("  nllh (raw)   : %.4f\n",  x$nllh_raw))
   cat(sprintf("  nllh (pen)   : %.4f\n",  x$nllh_pen))
   cat(sprintf("  obs/year     : %.2f\n",  x$obs_per_year))

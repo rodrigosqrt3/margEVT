@@ -14,7 +14,8 @@ pp_grad(
   pen_xi = TRUE,
   eps_l1 = 1e-10,
   obs_per_year = 365.25,
-  penalty_weights = NULL
+  penalty_weights = NULL,
+  shape_lower = -Inf
 )
 }
 \arguments{
@@ -41,6 +42,10 @@ Either a scalar or a vector \code{c(mu=, sigma=, xi=)}.}
 \item{penalty_weights}{Optional non-negative numeric vector of length
 \code{length(par)} multiplying \code{lambda} coordinate by coordinate
 (e.g. adaptive-LASSO weights). \code{NULL} (default) means unit weights.}
+
+\item{shape_lower}{Lower bound for the shape parameter at every period;
+parameter vectors with some \eqn{\xi_t} below it return \code{1e9}.
+Default \code{-Inf} (no bound).}
 }
 \value{
 Numeric vector of length \code{length(par)}.

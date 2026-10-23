@@ -397,3 +397,119 @@ test_that("backtest handles missing columns in binomial test mapping", {
   expect_type(res_missing, "list")
   expect_equal(res_missing$binom_tests$TR, c(2, 5))   # <-- Reverted to c(2, 5)
 })
+
+# -----------------------------------------------------------------------------
+# Trend, fixed covariates and penalty re-selection within windows
+# -----------------------------------------------------------------------------
+
+test_that("backtest renormalizes a trend covariate within each window", {
+  df <- .boot_data()
+  fit <- fit_nhpp(df, threshold = 10, loc_vars = c("x", "trend"),
+                  penalty = "none", obs_per_year = 50, verbose = FALSE)
+  bt <- backtest(fit, df, varname = "y", TRs = c(2, 5), n_obs = 50L,
+                 window_years = 5L, min_train_years = 15L, n_boot = 20L,
+                 trend_col = "trend", verbose = FALSE)
+  bt0 <- backtest(fit, df, varname = "y", TRs = c(2, 5), n_obs = 50L,
+                  window_years = 5L, min_train_years = 15L, n_boot = 20L,
+                  verbose = FALSE)
+  expect_true(all(bt$results$F_ann >= 0 & bt$results$F_ann <= 1,
+                  na.rm = TRUE))
+  # the window-specific trend changes the validation PIT values
+  expect_false(isTRUE(all.equal(bt$results$F_ann, bt0$results$F_ann)))
+
+  # the trend is also propagated to interactions that involve it
+  df$xt <- df$x * df$trend
+  fit_i <- fit_nhpp(df, threshold = 10, loc_vars = c("x", "trend", "xt"),
+                    penalty = "none", obs_per_year = 50, verbose = FALSE)
+  bt_i <- backtest(fit_i, df, varname = "y", TRs = 2, n_obs = 50L,
+                   window_years = 10L, min_train_years = 15L, n_boot = 10L,
+                   trend_col = "trend",
+                   interactions = list(xt = c("x", "trend")),
+                   verbose = FALSE)
+  expect_s3_class(bt_i$results, "data.frame")
+
+  expect_error(backtest(fit, df, "y", trend_col = "nope"), "trend_col")
+  expect_error(backtest(fit, df, "y", trend_col = c("x", "trend")),
+               "trend_col")
+})
+
+test_that("backtest accepts fixed covariates, BIC re-selection and adaptive fits", {
+  df <- .boot_data()
+  fit <- fit_nhpp(df, threshold = 10, loc_vars = c("x", "z"),
+                  penalty = "lasso", lambda = 1, penalty_weights = "adaptive",
+                  obs_per_year = 50, verbose = FALSE)
+  bt <- backtest(fit, df, varname = "y", TRs = 2, n_obs = 50L,
+                 window_years = 10L, min_train_years = 15L, n_boot = 10L,
+                 fixed = list(z = 0), reselect_lambda = TRUE,
+                 verbose = FALSE)
+  expect_s3_class(bt$binom_tests, "data.frame")
+  # covariates inactive in a window refit are zero-filled without warnings
+  fit_z <- fit_nhpp(df, threshold = 10, loc_vars = c("x", "z"),
+                    penalty = "lasso", lambda = 1, penalty_weights = "adaptive",
+                    obs_per_year = 50, verbose = FALSE)
+  expect_false("z" %in% active_covariates(fit_z))
+  expect_warning(
+    backtest(fit_z, df, varname = "y", TRs = 2, n_obs = 50L,
+             window_years = 10L, min_train_years = 15L, n_boot = 10L,
+             verbose = FALSE),
+    NA)
+  expect_error(backtest(fit, df, "y", fixed = list(1)), "fixed")
+  expect_error(backtest(fit, df, "y", reselect_lambda = NA), "reselect_lambda")
+  expect_error(backtest(fit, df, "y", cores = 0), "cores")
+})
+
+# -----------------------------------------------------------------------------
+# Approaches B and C, and window-wise declustering
+# -----------------------------------------------------------------------------
+
+test_that("backtest evaluates approaches B and C on the same refit", {
+  s <- make_bt_df()
+  res <- backtest(s$fit, s$df, varname = "y", TRs = c(2, 5), n_obs = s$n_obs,
+                  window_years = 6L, min_train_years = 12L, n_boot = 30L,
+                  approaches = c("C", "B"), verbose = FALSE)
+  expect_named(res, c("results", "binom_tests", "ks_test"))
+  r <- res$results
+  expect_true(all(c("F_ann_B", "F_ann_C", "exc_B_T2", "exc_C_T5") %in% names(r)))
+  expect_identical(r$F_ann, r$F_ann_C)                 # legacy = first approach
+  expect_identical(r$exc_T2, r$exc_C_T2)
+  expect_equal(nrow(res$binom_tests), 4L)
+  expect_setequal(unique(res$binom_tests$approach), c("B", "C"))
+  fB <- r$F_ann_B[!is.na(r$F_ann_B)]
+  expect_true(length(fB) > 0 && all(fB >= 0 & fB <= 1))
+})
+
+test_that("backtest with only C keeps the legacy layout", {
+  s <- make_bt_df()
+  res <- backtest(s$fit, s$df, varname = "y", TRs = c(2, 5), n_obs = s$n_obs,
+                  window_years = 6L, min_train_years = 12L, n_boot = 20L,
+                  verbose = FALSE)
+  expect_equal(res$binom_tests$TR, c(2, 5))
+  expect_true(all(res$binom_tests$approach == "C"))
+  expect_true(all(c("F_ann", "exc_T2", "exc_T5") %in% names(res$results)))
+})
+
+test_that("backtest applies `decluster` to the training series only", {
+  s <- make_bt_df()
+  args <- list(s$fit, s$df, varname = "y", TRs = c(2, 5), n_obs = s$n_obs,
+               window_years = 6L, min_train_years = 12L, n_boot = 20L,
+               verbose = FALSE)
+  base <- do.call(backtest, args)
+  same <- do.call(backtest, c(args, list(decluster = function(x) x)))
+  expect_identical(base$results, same$results)
+  seen <- integer(0)
+  spy <- function(x) { seen <<- c(seen, length(x)); x }
+  invisible(do.call(backtest, c(args, list(decluster = spy))))
+  expect_true(all(seen %% s$n_obs == 0L))               # whole training years
+  expect_error(do.call(backtest, c(args, list(decluster = function(x) x[-1]))),
+               "input length")
+  expect_error(do.call(backtest, c(args, list(approaches = "A"))), "approaches")
+  expect_error(do.call(backtest, c(args, list(decluster = 1))), "decluster")
+})
+
+test_that("backtest rejects malformed generator_args", {
+  s <- make_bt_df()
+  expect_error(backtest(s$fit, s$df, varname = "y", generator_args = list(1),
+                        verbose = FALSE), "named list")
+  expect_error(backtest(s$fit, s$df, varname = "y", generator_args = 1,
+                        verbose = FALSE), "named list")
+})

@@ -23,8 +23,10 @@ fit_nhpp(
   lambda_grid = NULL,
   init = NULL,
   grad_tol = 5e-04,
+  shape_lower = -0.5,
   maxit = 10000L,
   calc_hessian = FALSE,
+  scaling = c("auto", "none"),
   verbose = TRUE
 )
 }
@@ -92,10 +94,30 @@ used for BIC selection instead of the default two-phase grid.}
 \item{grad_tol}{Positive tolerance for the KKT violation divided by the
 number of exceedances. Default \code{5e-4}.}
 
+\item{shape_lower}{Lower bound imposed on the shape parameter
+\eqn{\xi_t} at every observation, or \code{-Inf} for no bound. The
+default \code{-0.5} restricts estimation to the region in which the
+maximum likelihood estimator has its usual asymptotic properties
+(Smith, 1985); below \eqn{-1} the point-process likelihood is unbounded.
+With a shape design made of an intercept and at most one covariate the
+bound is handled exactly (box-constrained optimization, KKT conditions
+with multipliers); with more shape covariates it acts as a barrier.
+Whether the bound is active at the solution is stored in
+\code{shape_at_bound}.}
+
 \item{maxit}{Integer. Maximum optimizer iterations. Default \code{10000L}.}
 
 \item{calc_hessian}{Logical. Compute the Hessian of the penalized
 objective at the solution? Default \code{FALSE}.}
+
+\item{scaling}{Parameter scaling for the optimizer: \code{"auto"}
+(default) passes \code{optim()} the scales \eqn{1/\sqrt{|H_{kk}|}}, with
+\eqn{H_{kk}} the diagonal curvature of the unpenalized negative
+log-likelihood at the starting values, computed once per call and used
+along the whole regularization path; \code{"none"} reproduces the
+unscaled optimization of earlier versions. Scaling changes the path of the
+optimizer, not the problem: every reported fit satisfies the same KKT
+conditions, and estimates differ only within the optimizer tolerance.}
 
 \item{verbose}{Logical. Print progress during BIC grid search and
 convergence warnings. Default \code{TRUE}.}

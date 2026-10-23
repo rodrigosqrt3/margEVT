@@ -10,6 +10,8 @@
 #   - .penalty_value_grad()   : smooth elastic-net value and gradient (internal)
 #   - .objective_factory()    : cached fn/gr pair for optim() (internal)
 #   - .kkt_violation()        : KKT-based stationarity measure (internal)
+#   - .shape_bound_map()      : box reparametrization of the shape bound (internal)
+#   - .kkt_violation_bounded(): KKT measure under the shape bound (internal)
 #   - pp_nllh(), pp_grad()    : exported value and gradient
 # =============================================================================
 
@@ -49,11 +51,94 @@
 }
 
 # Unpenalized negative log-likelihood and its exact gradient.
-# Returns value = 1e9 outside the point-process support; the gradient is
-# still evaluated with the support masks, as optimizers only use gradients
-# at accepted (finite-objective) iterates.
+# The integrated intensity follows the point-process definition
+# Lambda = sum_t [1 + xi_t (u - mu_t) / sigma_t]_+^(-1/xi_t) / n_y:
+# when xi_t < 0 and the upper endpoint mu_t - sigma_t / xi_t lies below u,
+# the intensity vanishes above u and period t contributes zero. The value is
+# 1e9 only outside the model support: an exceedance beyond the upper endpoint,
+# a threshold below the lower endpoint (xi_t > 0), or xi_t < shape_lower.
+#
+# This is the fast path, used for every evaluation. It computes z_u, log z_u
+# and tau once and obtains z_u^(-1/xi - 1) as tau / z_u. Outside the support
+# it returns 1e9 directly when only the value is requested (line-search
+# trials); with grad = TRUE, and whenever some |xi_t| < 1e-6 (Gumbel limits),
+# it defers to .nhpp_eval_ref(), so the masked gradient and the Gumbel
+# expressions are unchanged. Both agree to rounding error (tests/test-v050.R).
 .nhpp_eval <- function(par, dm, y, threshold, obs_per_year = 365.25,
-                       grad = TRUE) {
+                       grad = TRUE, shape_lower = -Inf) {
+  X_mu <- dm$X_mu; X_sigma <- dm$X_sigma; X_xi <- dm$X_xi
+  p_mu <- ncol(X_mu); p_sig <- ncol(X_sigma); p_xi <- ncol(X_xi)
+  mu_t <- drop(X_mu %*% par[seq_len(p_mu)])
+  lsig <- drop(X_sigma %*% par[p_mu + seq_len(p_sig)])
+  sig_t <- exp(lsig)
+  xi_t <- drop(X_xi %*% par[p_mu + p_sig + seq_len(p_xi)])
+
+  reference <- function()
+    .nhpp_eval_ref(par, dm, y, threshold, obs_per_year, grad, shape_lower)
+  outside <- function()
+    if (isTRUE(grad)) reference() else list(value = 1e9, grad = NULL)
+
+  if (!all(is.finite(xi_t)) || any(abs(xi_t) < 1e-6)) return(reference())
+  if (!all(is.finite(mu_t)) || !all(is.finite(sig_t)) || any(sig_t <= 0) ||
+      any(xi_t < shape_lower - 1e-10))
+    return(outside())
+
+  wu  <- (threshold - mu_t) / sig_t
+  z_u <- 1 + xi_t * wu
+  if (!all(is.finite(z_u)) || any(xi_t > 0 & z_u <= 0)) return(outside())
+
+  exc  <- which(y > threshold)
+  mu_e <- mu_t[exc]; sig_e <- sig_t[exc]; xi_e <- xi_t[exc]
+  we   <- (y[exc] - mu_e) / sig_e
+  z_e  <- 1 + xi_e * we
+  if (!all(is.finite(z_e)) || any(z_e <= 0)) return(outside())
+  lze <- log(z_e)
+
+  pos    <- z_u > 0
+  allpos <- all(pos)
+  if (allpos) {
+    lz  <- log(z_u)
+    tau <- exp(-lz / xi_t)
+  } else {
+    lz  <- numeric(length(z_u)); lz[pos]  <- log(z_u[pos])
+    tau <- numeric(length(z_u)); tau[pos] <- exp(-lz[pos] / xi_t[pos])
+  }
+  value <- sum(tau) / obs_per_year - sum(-lsig[exc] - (1 + 1 / xi_e) * lze)
+  if (!isTRUE(grad)) return(list(value = value, grad = NULL))
+
+  if (allpos) {
+    tz     <- tau / z_u
+    g_mu   <- tz / sig_t
+    g_lsig <- tz * wu
+    g_xi   <- tau * (lz / xi_t^2 - wu / (z_u * xi_t))
+  } else {
+    g_mu <- g_lsig <- g_xi <- numeric(length(z_u))
+    k  <- which(pos)
+    tz <- tau[k] / z_u[k]
+    g_mu[k]   <- tz / sig_t[k]
+    g_lsig[k] <- tz * wu[k]
+    g_xi[k]   <- tau[k] * (lz[k] / xi_t[k]^2 - wu[k] / (z_u[k] * xi_t[k]))
+  }
+  g_mu   <- g_mu / obs_per_year
+  g_lsig <- g_lsig / obs_per_year
+  g_xi   <- g_xi / obs_per_year
+  a <- (1 + xi_e) / z_e
+  g_mu[exc]   <- g_mu[exc]   - a / sig_e
+  g_lsig[exc] <- g_lsig[exc] + 1 - a * we
+  g_xi[exc]   <- g_xi[exc]   - lze / xi_e^2 + (1 + 1 / xi_e) * we / z_e
+
+  list(value = value,
+       grad  = c(as.numeric(crossprod(X_mu,    g_mu)),
+                 as.numeric(crossprod(X_sigma, g_lsig)),
+                 as.numeric(crossprod(X_xi,    g_xi))))
+}
+
+# Reference implementation (used by .nhpp_eval() for support violations with
+# grad = TRUE and for Gumbel coordinates). The gradient uses the support
+# masks; tau_t and its derivatives vanish continuously at z_u = 0 when
+# -1 < xi_t < 0.
+.nhpp_eval_ref <- function(par, dm, y, threshold, obs_per_year = 365.25,
+                           grad = TRUE, shape_lower = -Inf) {
   X_mu    <- dm$X_mu
   X_sigma <- dm$X_sigma
   X_xi    <- dm$X_xi
@@ -76,17 +161,19 @@
   # ---- value --------------------------------------------------------------
   value <- NA_real_
   if (any(!is.finite(mu_t)) || any(!is.finite(sig_t)) ||
-      any(sig_t <= 0) || any(!is.finite(xi_t))) {
+      any(sig_t <= 0) || any(!is.finite(xi_t)) ||
+      any(xi_t < shape_lower - 1e-10)) {
     value <- 1e9
   } else {
-    z_u <- 1 + xi_t * (threshold - mu_t) / sig_t
-    if (any(!is.finite(z_u)) || any(z_u <= 0)) {
+    z_u    <- 1 + xi_t * (threshold - mu_t) / sig_t
+    gumbel <- abs(xi_t) < xi_tol
+    if (any(!is.finite(z_u)) || any(!gumbel & xi_t > 0 & z_u <= 0)) {
       value <- 1e9
     } else {
-      gumbel <- abs(xi_t) < xi_tol
       tau    <- numeric(n)
-      tau[ gumbel] <- exp(pmax(-500, -(threshold - mu_t[gumbel]) / sig_t[gumbel]))
-      tau[!gumbel] <- z_u[!gumbel]^(-1 / xi_t[!gumbel])
+      pos    <- !gumbel & z_u > 0
+      tau[gumbel] <- exp(pmax(-500, -(threshold - mu_t[gumbel]) / sig_t[gumbel]))
+      tau[pos]    <- z_u[pos]^(-1 / xi_t[pos])
       Lambda <- sum(tau) / obs_per_year
       log_f  <- 0
       if (length(exc_idx) > 0L) {
@@ -195,24 +282,35 @@
   list(value = value, grad = grad)
 }
 
-# Cached objective for optim(): value and gradient are computed together and
-# reused when optim() requests both at the same parameter vector.
+# Cached objective for optim(). fn computes only the value, since optim()
+# calls it at every line-search trial (many of which fall outside the
+# support); gr computes value and gradient and caches both, so fn at an
+# accepted point is free.
 .objective_factory <- function(dm, y, threshold, pv, eps_l1 = 1e-10,
-                               obs_per_year = 365.25) {
-  last_par <- NULL
-  last     <- NULL
-  evaluate <- function(par) {
-    if (is.null(last_par) || !identical(par, last_par)) {
-      core <- .nhpp_eval(par, dm, y, threshold, obs_per_year, grad = TRUE)
-      pen  <- .penalty_value_grad(par, pv, eps_l1)
-      value <- if (core$value >= 1e9) 1e9 else core$value + pen$value
-      last <<- list(value = value, grad = core$grad + pen$grad)
-      last_par <<- par
-    }
-    last
+                               obs_per_year = 365.25, shape_lower = -Inf) {
+  v_par <- NULL; v_val <- NULL
+  g_par <- NULL; g_val <- NULL
+  fn <- function(par) {
+    if (!is.null(g_par) && identical(par, g_par)) return(g_val$value)
+    if (!is.null(v_par) && identical(par, v_par)) return(v_val)
+    core <- .nhpp_eval(par, dm, y, threshold, obs_per_year, grad = FALSE,
+                       shape_lower = shape_lower)
+    val <- if (core$value >= 1e9) 1e9 else
+      core$value + .penalty_value_grad(par, pv, eps_l1)$value
+    v_par <<- par; v_val <<- val
+    val
   }
-  list(fn = function(par) evaluate(par)$value,
-       gr = function(par) evaluate(par)$grad)
+  gr <- function(par) {
+    if (!is.null(g_par) && identical(par, g_par)) return(g_val$grad)
+    core <- .nhpp_eval(par, dm, y, threshold, obs_per_year, grad = TRUE,
+                       shape_lower = shape_lower)
+    pen  <- .penalty_value_grad(par, pv, eps_l1)
+    value <- if (core$value >= 1e9) 1e9 else core$value + pen$value
+    g_val <<- list(value = value, grad = core$grad + pen$grad)
+    g_par <<- par
+    g_val$grad
+  }
+  list(fn = fn, gr = gr)
 }
 
 # KKT-based stationarity measure for the smoothed elastic-net objective.
@@ -230,6 +328,87 @@
                          pv$lam[at_zero] * pv$alp[at_zero])
   }
   max(v)
+}
+
+# Linear map for the lower bound on the shape parameter. With a shape design
+# made of an intercept and at most one covariate x, xi_t >= shape_lower for
+# every t holds iff it holds at the rows where x is smallest and largest, so
+# v = A beta_xi (shape at those rows) turns the constraint into box bounds
+# v >= shape_lower. Returns NULL when there is no bound or the design has
+# more shape covariates (the bound is then enforced only as a barrier).
+.shape_bound_map <- function(dm, shape_lower) {
+  if (!is.finite(shape_lower)) return(NULL)
+  X    <- dm$X_xi
+  p_xi <- ncol(X)
+  if (p_xi > 2L || any(X[, 1L] != 1)) return(NULL)
+  rows <- if (p_xi == 1L) 1L else c(which.min(X[, 2L]), which.max(X[, 2L]))
+  A <- X[rows, , drop = FALSE]
+  if (abs(det(A)) < 1e-12) return(NULL)
+  list(A = A, Ainv = solve(A),
+       idx = ncol(dm$X_mu) + ncol(dm$X_sigma) + seq_len(p_xi),
+       lower = shape_lower)
+}
+
+# KKT multipliers of the shape block under the bound. The gradient is mapped
+# to the bounded coordinates v (h = Ainv' g); a coordinate at its bound must
+# have h >= 0 (its multiplier), an interior one h = 0. A penalized shape
+# covariate at zero contributes the subgradient lambda * alpha * s,
+# s in [-1, 1]. The violation max_j viol_j(s) is convex and piecewise linear
+# in s, so its minimum is attained at an endpoint, at a root of some h_j(s),
+# or where two pieces cross; all such candidates are evaluated exactly (a
+# grid fails when lambda * w is large, as with adaptive weights).
+# Returns the violation, the multipliers h at the best s, and the bound flags.
+.shape_kkt <- function(par, grad_total, pv, active_tol, bmap,
+                       eps_l1 = 1e-10) {
+  S <- bmap$idx
+  v <- drop(bmap$A %*% par[S])
+  at_bound <- v - bmap$lower < 1e-7
+  l1   <- pv$lam[S] * pv$alp[S] * par[S] / sqrt(par[S]^2 + eps_l1)
+  kink <- pv$lam[S] > 0 & pv$alp[S] > 0 & abs(par[S]) < active_tol
+  base <- grad_total[S] - l1
+  base[!kink] <- base[!kink] + l1[!kink]          # smooth part off the kink
+  h0 <- drop(crossprod(bmap$Ainv, base))
+  e  <- numeric(length(S))
+  e[kink] <- pv$lam[S][kink] * pv$alp[S][kink]
+  hc <- drop(crossprod(bmap$Ainv, e))
+  cand <- 0
+  if (any(kink)) {
+    cand <- c(-1, 0, 1)
+    nz <- abs(hc) > 0
+    cand <- c(cand, -h0[nz] / hc[nz])
+    m <- length(h0)
+    for (i in seq_len(m)) for (j in seq_len(m)) if (i < j)
+      for (sg in c(1, -1)) {
+        den <- hc[i] - sg * hc[j]
+        if (abs(den) > 0) cand <- c(cand, (sg * h0[j] - h0[i]) / den)
+      }
+    cand <- unique(pmin(1, pmax(-1, cand)))
+  }
+  viol <- function(s) {
+    h <- h0 + s * hc
+    max(ifelse(at_bound, pmax(0, -h), abs(h)))
+  }
+  vals <- vapply(cand, viol, numeric(1L))
+  s <- cand[which.min(vals)]
+  list(violation = min(vals), h = h0 + s * hc, at_bound = at_bound)
+}
+
+# KKT violation under the shape bound: .kkt_violation() outside the shape
+# block, .shape_kkt() inside it.
+.kkt_violation_bounded <- function(par, grad_total, pv, active_tol, bmap,
+                                   eps_l1 = 1e-10) {
+  if (is.null(bmap)) return(.kkt_violation(par, grad_total, pv, active_tol, eps_l1))
+  if (any(!is.finite(grad_total))) return(Inf)
+  S <- bmap$idx
+  v <- drop(bmap$A %*% par[S])
+  if (!any(v - bmap$lower < 1e-7))
+    return(.kkt_violation(par, grad_total, pv, active_tol, eps_l1))
+  other <- setdiff(seq_along(par), S)
+  v_other <- if (length(other))
+    .kkt_violation(par[other], grad_total[other],
+                   list(lam = pv$lam[other], alp = pv$alp[other]),
+                   active_tol, eps_l1) else 0
+  max(v_other, .shape_kkt(par, grad_total, pv, active_tol, bmap, eps_l1)$violation)
 }
 
 
@@ -253,9 +432,20 @@
 #' @param penalty_weights Optional non-negative numeric vector of length
 #'   \code{length(par)} multiplying \code{lambda} coordinate by coordinate
 #'   (e.g. adaptive-LASSO weights). \code{NULL} (default) means unit weights.
+#' @param shape_lower Lower bound for the shape parameter at every period;
+#'   parameter vectors with some \eqn{\xi_t} below it return \code{1e9}.
+#'   Default \code{-Inf} (no bound).
+#'
+#' @details The integrated intensity is
+#'   \eqn{\Lambda = n_y^{-1}\sum_t [1 + \xi_t (u - \mu_t)/\sigma_t]_+^{-1/\xi_t}},
+#'   so that, when \eqn{\xi_t < 0} and the upper endpoint
+#'   \eqn{\mu_t - \sigma_t/\xi_t} lies below \eqn{u}, period \eqn{t}
+#'   contributes zero (the intensity vanishes above the threshold).
 #'
 #' @return Scalar. The penalized negative log-likelihood value. Parameter
-#'   vectors outside the point-process support return \code{1e9}.
+#'   vectors outside the point-process support (an exceedance beyond the
+#'   upper endpoint, or a threshold below the lower endpoint) return
+#'   \code{1e9}.
 #'
 #' @examples
 #' set.seed(1)
@@ -270,8 +460,10 @@ pp_nllh <- function(par, dm, y, threshold,
                     lambda = 0.1, alpha = 0.5,
                     pen_xi = TRUE, eps_l1 = 1e-10,
                     obs_per_year = 365.25,
-                    penalty_weights = NULL) {
-  core <- .nhpp_eval(par, dm, y, threshold, obs_per_year, grad = FALSE)
+                    penalty_weights = NULL,
+                    shape_lower = -Inf) {
+  core <- .nhpp_eval(par, dm, y, threshold, obs_per_year, grad = FALSE,
+                     shape_lower = shape_lower)
   if (core$value >= 1e9) return(1e9)
   pv <- .penalty_vectors(dm, lambda, alpha, pen_xi, penalty_weights)
   core$value + .penalty_value_grad(par, pv, eps_l1)$value
@@ -295,8 +487,10 @@ pp_grad <- function(par, dm, y, threshold,
                     lambda = 0.1, alpha = 0.5,
                     pen_xi = TRUE, eps_l1 = 1e-10,
                     obs_per_year = 365.25,
-                    penalty_weights = NULL) {
-  core <- .nhpp_eval(par, dm, y, threshold, obs_per_year, grad = TRUE)
+                    penalty_weights = NULL,
+                    shape_lower = -Inf) {
+  core <- .nhpp_eval(par, dm, y, threshold, obs_per_year, grad = TRUE,
+                     shape_lower = shape_lower)
   pv <- .penalty_vectors(dm, lambda, alpha, pen_xi, penalty_weights)
   core$grad + .penalty_value_grad(par, pv, eps_l1)$grad
 }

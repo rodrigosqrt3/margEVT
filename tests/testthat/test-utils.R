@@ -232,3 +232,34 @@ test_that("plot.nhpp_fit plots non-stationary scale parameter in fitted plot", {
   fit_sig <- fit_nhpp(df, threshold = 4, scale_vars = "x", penalty = "none", verbose = FALSE)
   expect_silent(plot(fit_sig, type = "fitted"))
 })
+
+# -----------------------------------------------------------------------------
+# Random-number streams
+# -----------------------------------------------------------------------------
+
+test_that("RNG streams are reproducible, independent and seed-preserving", {
+  set.seed(3L); before <- stats::runif(2L)
+  set.seed(3L); first <- stats::runif(1L)
+  s1 <- margEVT:::.rng_streams(3L, 10L)
+  second <- stats::runif(1L)
+  expect_equal(c(first, second), before)
+  expect_identical(s1, margEVT:::.rng_streams(3L, 10L))
+  expect_false(identical(s1[[1L]], s1[[2L]]))
+
+  u1 <- margEVT:::.with_rng_stream(s1[[2L]], stats::runif(3L))
+  u2 <- margEVT:::.with_rng_stream(s1[[2L]], stats::runif(3L))
+  expect_identical(u1, u2)
+  expect_identical(RNGkind()[1L], "Mersenne-Twister")
+
+  # seed = NULL draws the base seed from (and advances) the caller stream
+  set.seed(4L); a <- margEVT:::.rng_streams(1L)
+  set.seed(4L); b <- margEVT:::.rng_streams(1L)
+  expect_identical(a, b)
+
+  # without a pre-existing seed none is left behind
+  old <- get(".Random.seed", envir = .GlobalEnv)
+  rm(".Random.seed", envir = .GlobalEnv)
+  margEVT:::.rng_streams(1L, 1L)
+  expect_false(exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE))
+  assign(".Random.seed", old, envir = .GlobalEnv)
+})

@@ -14,7 +14,8 @@ pp_nllh(
   pen_xi = TRUE,
   eps_l1 = 1e-10,
   obs_per_year = 365.25,
-  penalty_weights = NULL
+  penalty_weights = NULL,
+  shape_lower = -Inf
 )
 }
 \arguments{
@@ -41,15 +42,28 @@ Either a scalar or a vector \code{c(mu=, sigma=, xi=)}.}
 \item{penalty_weights}{Optional non-negative numeric vector of length
 \code{length(par)} multiplying \code{lambda} coordinate by coordinate
 (e.g. adaptive-LASSO weights). \code{NULL} (default) means unit weights.}
+
+\item{shape_lower}{Lower bound for the shape parameter at every period;
+parameter vectors with some \eqn{\xi_t} below it return \code{1e9}.
+Default \code{-Inf} (no bound).}
 }
 \value{
 Scalar. The penalized negative log-likelihood value. Parameter
-  vectors outside the point-process support return \code{1e9}.
+  vectors outside the point-process support (an exceedance beyond the
+  upper endpoint, or a threshold below the lower endpoint) return
+  \code{1e9}.
 }
 \description{
 Evaluates the negative log-likelihood of the non-homogeneous Poisson
 process (point-process) representation of threshold exceedances, plus a
 smoothed elastic-net penalty on the penalized coefficients.
+}
+\details{
+The integrated intensity is
+  \eqn{\Lambda = n_y^{-1}\sum_t [1 + \xi_t (u - \mu_t)/\sigma_t]_+^{-1/\xi_t}},
+  so that, when \eqn{\xi_t < 0} and the upper endpoint
+  \eqn{\mu_t - \sigma_t/\xi_t} lies below \eqn{u}, period \eqn{t}
+  contributes zero (the intensity vanishes above the threshold).
 }
 \examples{
 set.seed(1)

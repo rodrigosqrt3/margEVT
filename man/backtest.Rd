@@ -21,6 +21,9 @@ backtest(
   trend_col = NULL,
   fixed = list(),
   reselect_lambda = FALSE,
+  approaches = "C",
+  generator_args = list(),
+  decluster = NULL,
   cores = 1L,
   verbose = TRUE
 )
@@ -50,8 +53,9 @@ Default \code{5L}.}
 \item{min_train_years}{Integer. Minimum number of training years before
 the first validation window. Default \code{10L}.}
 
-\item{n_boot}{Integer. Bootstrap years for covariate marginalization
-within each window. Default \code{200L}.}
+\item{n_boot}{Integer. Resampled years (approach C) or simulated
+trajectories (approach B) for covariate marginalization within each
+window. Default \code{200L}.}
 
 \item{interactions}{Named list of interactions passed to
 \code{\link{build_cov_annual}}. Default \code{list()}.}
@@ -79,6 +83,23 @@ by BIC in every training window; otherwise the original \code{lambda} is
 kept. Adaptive penalty weights are always recomputed within each training
 window, so the weights do not use validation data. Default \code{FALSE}.}
 
+\item{approaches}{Character vector, any of \code{"B"} and \code{"C"}: how
+the covariates are integrated out in each window. \code{"C"} (default)
+resamples observed training years; \code{"B"} fits a VAR generator
+(\code{\link{fit_var_generator}}) to the training years only and uses
+\code{n_boot} simulated trajectories. Both are evaluated on the same
+window refit. The first element defines the legacy columns \code{F_ann}
+and \code{exc_T<TR>}.}
+
+\item{generator_args}{Named list of further arguments for
+\code{\link{fit_var_generator}} in approach B (e.g. \code{vars},
+\code{derive}, \code{derive_lead}). Default \code{list()}.}
+
+\item{decluster}{Optional function applied to the training-year values of
+\code{varname} (in row order) in each window; its result replaces
+\code{y} for the refit, so declustering uses training data only.
+Default \code{NULL} (use \code{data$y} as supplied).}
+
 \item{cores}{Positive integer number of worker processes over which the
 windows are distributed. Results do not depend on \code{cores}.
 Default \code{1L}.}
@@ -88,15 +109,16 @@ Default \code{1L}.}
 \value{
 A list with three elements:
   \item{results}{Data frame with one row per validation year, containing
-    the observed annual maximum, PIT value, and exceedance indicators for
-    each return period.}
+    the observed annual maximum and, for each approach \code{a}, the PIT
+    value \code{F_ann_<a>} and exceedance indicators \code{exc_<a>_T<TR>};
+    \code{F_ann} and \code{exc_T<TR>} repeat those of the first approach.}
   \item{binom_tests}{Data frame with nominal binomial comparisons for each
-    TR. The \code{not_rejected} field is the recommended interpretation;
-    \code{calibrated} is retained as a legacy alias.}
+    approach and TR. The \code{not_rejected} field is the recommended
+    interpretation; \code{calibrated} is retained as a legacy alias.}
   \item{ks_test}{Data frame with the exploratory tail-conditional PIT
-    KS comparison, including \code{not_rejected} and the legacy
-    \code{calibrated} alias, or \code{NULL} if fewer than 5 validation
-    years had events.}
+    KS comparison for each approach, including \code{not_rejected} and the
+    legacy \code{calibrated} alias, or \code{NULL} if fewer than 5
+    validation years had events.}
 }
 \description{
 Evaluates predictive performance of a fitted \code{nhpp_fit} model via

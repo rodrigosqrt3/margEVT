@@ -420,3 +420,27 @@ test_that("inactive design columns are filled silently", {
   expect_null(active_covariates(fit))
   expect_silent(marginalize(fit, s$df, TRs = 10, n_boot = 20L))
 })
+
+# -----------------------------------------------------------------------------
+# annual_prob()
+# -----------------------------------------------------------------------------
+
+test_that("annual_prob is the probability inverted by marginalize", {
+  s <- make_bt_df()
+  rl <- marginalize(s$fit, s$df, TRs = c(5, 20), approaches = "C",
+                    year_col = "year", n_boot = 50, tol_root = 1e-8)
+  blocks <- local({
+    set.seed(2024)
+    yrs <- unique(s$df$year)
+    lapply(seq_len(50), function(i) {
+      b <- s$df[s$df$year == sample(yrs, 1L), "x", drop = FALSE]
+      build_cov_annual(s$fit, list(x = b$x), n_obs = s$n_obs)
+    })
+  })
+  p <- annual_prob(s$fit, rl$RL, blocks, n_obs = s$n_obs)
+  expect_true(all(diff(annual_prob(s$fit, c(9, 12, 15), blocks)) > 0))
+  expect_true(all(p > 0 & p < 1))
+  expect_error(annual_prob(s$fit, 10, blocks[[1]][-1, ]), "whole years")
+  expect_error(annual_prob(list(), 10, blocks), "nhpp_fit")
+  expect_error(annual_prob(s$fit, NA_real_, blocks), "finite numeric")
+})
