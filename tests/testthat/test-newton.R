@@ -20,8 +20,10 @@ test_that("analytical Hessian matches finite differences of the gradient", {
          margEVT:::.nhpp_eval(b, dm, df$y, u, 50, TRUE)$grad) / (2 * e)
     })
     expect_equal(h$hessian, num, tolerance = 1e-5)
-    expect_equal(h$grad, margEVT:::.nhpp_eval(p, dm, df$y, u, 50, TRUE)$grad,
-                 tolerance = 1e-10)
+    # absolute comparison: at the MLE the gradient is close to zero, so a
+    # relative tolerance would only measure rounding (it differs by platform)
+    g <- margEVT:::.nhpp_eval(p, dm, df$y, u, 50, TRUE)$grad
+    expect_lt(max(abs(h$grad - g)), 1e-8 * max(1, abs(g)))
   }
   expect_null(margEVT:::.nhpp_hessian(c(11, 0, 0, 0, 0, 1e-9), dm, df$y, u, 50,
                                       -0.5))                       # Gumbel
