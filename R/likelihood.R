@@ -58,79 +58,23 @@
 # 1e9 only outside the model support: an exceedance beyond the upper endpoint,
 # a threshold below the lower endpoint (xi_t > 0), or xi_t < shape_lower.
 #
-# This is the fast path, used for every evaluation. It computes z_u, log z_u
-# and tau once and obtains z_u^(-1/xi - 1) as tau / z_u. Outside the support
-# it returns 1e9 directly when only the value is requested (line-search
-# trials); with grad = TRUE, and whenever some |xi_t| < 1e-6 (Gumbel limits),
-# it defers to .nhpp_eval_ref(), so the masked gradient and the Gumbel
-# expressions are unchanged. Both agree to rounding error (tests/test-v050.R).
+# This is the fast path, used for every evaluation: one compiled pass over
+# the observations (nhpp_eval_cpp() in src/kernels.cpp), which computes
+# z_u, log z_u and tau once and obtains z_u^(-1/xi - 1) as tau / z_u.
+# Outside the support it returns 1e9 directly when only the value is
+# requested (line-search trials); with grad = TRUE, and whenever some
+# |xi_t| < 1e-6 (Gumbel limits), it defers to .nhpp_eval_ref(), so the
+# masked gradient and the Gumbel expressions are unchanged. Both agree to
+# rounding error (test-likelihood.R).
 .nhpp_eval <- function(par, dm, y, threshold, obs_per_year = 365.25,
                        grad = TRUE, shape_lower = -Inf) {
-  X_mu <- dm$X_mu; X_sigma <- dm$X_sigma; X_xi <- dm$X_xi
-  p_mu <- ncol(X_mu); p_sig <- ncol(X_sigma); p_xi <- ncol(X_xi)
-  mu_t <- drop(X_mu %*% par[seq_len(p_mu)])
-  lsig <- drop(X_sigma %*% par[p_mu + seq_len(p_sig)])
-  sig_t <- exp(lsig)
-  xi_t <- drop(X_xi %*% par[p_mu + p_sig + seq_len(p_xi)])
-
-  reference <- function()
-    .nhpp_eval_ref(par, dm, y, threshold, obs_per_year, grad, shape_lower)
-  outside <- function()
-    if (isTRUE(grad)) reference() else list(value = 1e9, grad = NULL)
-
-  if (!all(is.finite(xi_t)) || any(abs(xi_t) < 1e-6)) return(reference())
-  if (!all(is.finite(mu_t)) || !all(is.finite(sig_t)) || any(sig_t <= 0) ||
-      any(xi_t < shape_lower - 1e-10))
-    return(outside())
-
-  wu  <- (threshold - mu_t) / sig_t
-  z_u <- 1 + xi_t * wu
-  if (!all(is.finite(z_u)) || any(xi_t > 0 & z_u <= 0)) return(outside())
-
-  exc  <- which(y > threshold)
-  mu_e <- mu_t[exc]; sig_e <- sig_t[exc]; xi_e <- xi_t[exc]
-  we   <- (y[exc] - mu_e) / sig_e
-  z_e  <- 1 + xi_e * we
-  if (!all(is.finite(z_e)) || any(z_e <= 0)) return(outside())
-  lze <- log(z_e)
-
-  pos    <- z_u > 0
-  allpos <- all(pos)
-  if (allpos) {
-    lz  <- log(z_u)
-    tau <- exp(-lz / xi_t)
-  } else {
-    lz  <- numeric(length(z_u)); lz[pos]  <- log(z_u[pos])
-    tau <- numeric(length(z_u)); tau[pos] <- exp(-lz[pos] / xi_t[pos])
-  }
-  value <- sum(tau) / obs_per_year - sum(-lsig[exc] - (1 + 1 / xi_e) * lze)
-  if (!isTRUE(grad)) return(list(value = value, grad = NULL))
-
-  if (allpos) {
-    tz     <- tau / z_u
-    g_mu   <- tz / sig_t
-    g_lsig <- tz * wu
-    g_xi   <- tau * (lz / xi_t^2 - wu / (z_u * xi_t))
-  } else {
-    g_mu <- g_lsig <- g_xi <- numeric(length(z_u))
-    k  <- which(pos)
-    tz <- tau[k] / z_u[k]
-    g_mu[k]   <- tz / sig_t[k]
-    g_lsig[k] <- tz * wu[k]
-    g_xi[k]   <- tau[k] * (lz[k] / xi_t[k]^2 - wu[k] / (z_u[k] * xi_t[k]))
-  }
-  g_mu   <- g_mu / obs_per_year
-  g_lsig <- g_lsig / obs_per_year
-  g_xi   <- g_xi / obs_per_year
-  a <- (1 + xi_e) / z_e
-  g_mu[exc]   <- g_mu[exc]   - a / sig_e
-  g_lsig[exc] <- g_lsig[exc] + 1 - a * we
-  g_xi[exc]   <- g_xi[exc]   - lze / xi_e^2 + (1 + 1 / xi_e) * we / z_e
-
-  list(value = value,
-       grad  = c(as.numeric(crossprod(X_mu,    g_mu)),
-                 as.numeric(crossprod(X_sigma, g_lsig)),
-                 as.numeric(crossprod(X_xi,    g_xi))))
+  grad <- isTRUE(grad)
+  r <- nhpp_eval_cpp(as.numeric(par), dm$X_mu, dm$X_sigma, dm$X_xi,
+                     as.numeric(y), as.numeric(threshold),
+                     as.numeric(obs_per_year), grad, as.numeric(shape_lower))
+  if (r$status == 0L) return(list(value = r$value, grad = r$grad))
+  if (r$status == 1L && !grad) return(list(value = 1e9, grad = NULL))
+  .nhpp_eval_ref(par, dm, y, threshold, obs_per_year, grad, shape_lower)
 }
 
 # Reference implementation (used by .nhpp_eval() for support violations with

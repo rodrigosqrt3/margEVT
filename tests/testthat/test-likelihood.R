@@ -86,6 +86,27 @@ test_that("fast likelihood path agrees with the reference implementation", {
   expect_gt(n_inside, 50L)
 })
 
+test_that("compiled likelihood handles endpoints below u and integer designs", {
+  set.seed(5L)
+  n <- 400L
+  df <- data.frame(x = stats::rnorm(n), k = rep(0:1, n / 2))
+  df$y <- 10 + df$x + stats::rexp(n)
+  dm <- build_design_matrices(df, loc_vars = c("x", "k"), scale_vars = "x")
+  u <- 11.5
+  # negative shape with the upper endpoint below u in part of the periods
+  par <- c(9, 1, 0.3, log(1), 0.2, -0.45)
+  a <- margEVT:::.nhpp_eval_ref(par, dm, df$y, u, 50, TRUE, -0.5)
+  b <- margEVT:::.nhpp_eval(par, dm, df$y, u, 50, TRUE, -0.5)
+  expect_equal(b$value, a$value, tolerance = 1e-10)
+  expect_equal(b$grad, a$grad, tolerance = 1e-9)
+  dm_int <- dm
+  storage.mode(dm_int$X_mu) <- "integer"
+  dm_int$X_mu[, "x"] <- 0L
+  dm$X_mu[, "x"] <- 0
+  expect_equal(margEVT:::.nhpp_eval(par, dm_int, df$y, u, 50, TRUE, -0.5),
+               margEVT:::.nhpp_eval(par, dm, df$y, u, 50, TRUE, -0.5))
+})
+
 # -----------------------------------------------------------------------------
 # Coordinate penalties, objective and KKT conditions
 # -----------------------------------------------------------------------------

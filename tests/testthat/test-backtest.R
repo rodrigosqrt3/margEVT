@@ -23,6 +23,15 @@ make_backtest_df <- function(seed = 1L) {
 # -----------------------------------------------------------------------------
 # Core Functionality Tests
 # -----------------------------------------------------------------------------
+
+test_that("window return levels are missing when the parameters are invalid", {
+  s <- make_bt_df()
+  fit <- s$fit
+  fit$par_oper[["sigma.(Intercept)"]] <- 1e4      # scale overflows to Inf
+  cov <- list(data.frame(x = rep(0, s$n_obs)))
+  rl <- margEVT:::.compute_rl_from_cov_list(fit, cov, c(2, 10), 9, 50, s$n_obs)
+  expect_identical(rl, c(NA_real_, NA_real_))
+})
 test_that("backtest returns correct list structure", {
   s   <- make_backtest_df()
   res <- backtest(s$fit, s$df, varname = "y",

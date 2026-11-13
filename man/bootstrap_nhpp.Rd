@@ -52,7 +52,8 @@ size, so the uncertainty about the exceedance rate is also propagated.}
 \item{verbose}{Logical. Print progress. Default \code{TRUE}.}
 }
 \value{
-A list with \code{rl} (data frame as in \code{bootstrap_rl}, or
+An object of class \code{nhpp_boot} (a list, printed by
+  \code{\link{print.nhpp_boot}}) with \code{rl} (data frame as in \code{bootstrap_rl}, or
   \code{NULL}), \code{coef} (data frame as in \code{bootstrap_coef}, with
   the share of replicates at zero in \code{p_zero}), and the replicate
   matrices \code{rl_replicates} and \code{coef_replicates}.

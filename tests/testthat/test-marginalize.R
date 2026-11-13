@@ -1,6 +1,91 @@
 library(testthat)
 library(margEVT)
 
+test_that("compiled pathwise probabilities match the R definitions", {
+  set.seed(11L)
+  n_obs <- 20L; B <- 30L
+  mu <- stats::rnorm(n_obs * B, 10); sg <- exp(stats::rnorm(n_obs * B, 0, 0.2))
+  xi <- sample(c(-0.3, -1e-8, 0.2), n_obs * B, replace = TRUE)
+  for (z in c(9, 12, 14, 30)) {
+    tau <- margEVT:::.tail_measure_at_level(z, mu, sg, xi)
+    G_old <- exp(-colSums(matrix(tau, nrow = n_obs)) / n_obs)
+    expect_equal(margEVT:::.pathwise_prob(z, mu, sg, xi, n_obs), G_old,
+                 tolerance = 1e-12)
+    dl <- matrix(margEVT:::.tail_measure_derivative(z, mu, sg, xi),
+                 nrow = n_obs)
+    dG <- ifelse(G_old > 0, -G_old * colSums(dl) / n_obs, 0)
+    se_old <- if (mean(dG) > 0) stats::sd(G_old) / (sqrt(B) * mean(dG)) else
+      NA_real_
+    expect_equal(margEVT:::.mc_root_se(z, mu, sg, xi, n_obs), se_old,
+                 tolerance = 1e-10)
+  }
+  G2 <- margEVT:::.pathwise_prob(12, mu, sg, xi, n_obs, n_rows = 2L * n_obs)
+  expect_length(G2, B / 2)
+})
+
+test_that("stacked covariate blocks equal the row-bound single blocks", {
+  set.seed(13L)
+  n_obs <- 30L
+  df <- cbind(data.frame(a = stats::rnorm(600), b = stats::rnorm(600),
+                         w = stats::rnorm(600), year = rep(1:20, each = n_obs)),
+              seasonal_harmonics(rep(1:n_obs, 20), period = n_obs))
+  df$ab <- df$a * df$b
+  df$y <- 10 + df$a + df$ab + 2 * df$cos1 + stats::rexp(600)
+  fit <- fit_nhpp(df, threshold = 12, loc_vars = c("cos1", "sen1", "a", "ab", "w"),
+                  free_vars = c("cos1", "sen1"), penalty = "none",
+                  obs_per_year = n_obs, verbose = FALSE)
+  fit$par[["mu.w"]] <- 0                                   # w inactive
+  cb <- margEVT:::.covariate_builder(fit, n_obs, NULL,
+                                     interactions = list(ab = c("a", "b")),
+                                     fixed = list(b = 0.5))
+  blocks <- lapply(1:5, function(yr) df[df$year == yr, c("a", "w")])
+  blocks[[3]] <- list(a = 1)                               # scalar, no w
+  expect_equal(cb$build_stack(blocks), do.call(rbind, lapply(blocks, cb$build)))
+  blocks[[4]] <- list(a = c(1, 2))
+  expect_error(cb$build_stack(blocks), "scalar or a vector")
+  # an interaction input missing from a later block fails as in build()
+  cb2 <- margEVT:::.covariate_builder(fit, n_obs, NULL,
+                                      interactions = list(ab = c("a", "b")),
+                                      fixed = list())
+  expect_error(cb2$build_stack(list(list(a = 1, b = 2), list(a = 1))),
+               "absent")
+})
+
+test_that("Newton root search handles undefined values, exact roots, no convergence", {
+  lin <- function(z) c((z - 10) / 20, 1 / 20)        # G linear on [10, 30]
+  expect_equal(margEVT:::.find_return_level(2, NULL, 10, 30, fd = lin,
+                                            start = 20), 20)        # exact
+  holes <- function(z) if (z %in% c(10, 30)) lin(z) else c(NA_real_, NA_real_)
+  expect_true(is.na(margEVT:::.find_return_level(2, NULL, 10, 30, fd = holes)))
+  # a zero tolerance never declares convergence; the last iterate is returned
+  jump <- function(z) c(as.numeric(z >= 30), 0)       # bisection towards 30
+  r <- margEVT:::.find_return_level(3, NULL, 10, 30, tol = 0, fd = jump)
+  expect_equal(r, 30, tolerance = 1e-8)
+  # invalid parameters give missing levels
+  bad <- margEVT:::.rl_from_params(list(mu = NA_real_, sigma = 1, xi = 0.1),
+                                   c(10, 50), 0, 10, 1e-4, 1L)
+  expect_true(all(is.na(bad$rl)) && all(is.na(bad$se)))
+})
+
+test_that("Newton root search agrees with uniroot", {
+  set.seed(12L)
+  n_obs <- 50L
+  prm <- list(mu = stats::rnorm(n_obs * 200, 10, 0.5),
+              sigma = rep(1, n_obs * 200), xi = rep(0.1, n_obs * 200))
+  f <- function(z) margEVT:::.annual_exceedance_prob(z, prm$mu, prm$sigma,
+                                                     prm$xi, n_obs)
+  curve <- margEVT:::.level_curve(prm, n_obs)
+  TRs <- c(100, 2, 10, 50)
+  new <- margEVT:::.solve_return_levels(TRs, curve, 10, 30, tol = 1e-6)
+  old <- vapply(TRs, function(T) margEVT:::.find_return_level(T, f, 10, 30,
+                                                              tol = 1e-9),
+                numeric(1L))
+  expect_equal(new, old, tolerance = 1e-6)
+  expect_equal(vapply(new, f, numeric(1L)), 1 - 1 / TRs, tolerance = 1e-8)
+  # a target below the threshold probability is not extrapolated
+  expect_true(is.na(margEVT:::.solve_return_levels(1.0001, curve, 10, 30)))
+})
+
 make_stationary_fit <- function(seed = 1L) {
   set.seed(seed)
   n  <- 500L
@@ -105,15 +190,20 @@ test_that("annual probabilities reject invalid fitted parameters", {
   )
 })
 
-test_that("annual probabilities reject an invalid computed tail measure", {
-  testthat::local_mocked_bindings(
-    .tail_measure_at_level = function(...) NA_real_
+test_that("annual probabilities reject invalid parameters", {
+  # parameters are validated before the compiled kernel runs, so the tail
+  # measure it computes is always defined
+  expect_error(
+    margEVT:::.annual_exceedance_prob(
+      z = 1, mu_t = NA_real_, sigma_t = 1, xi_t = 0, n_obs = 1L
+    ),
+    regexp = "finite"
   )
   expect_error(
     margEVT:::.annual_exceedance_prob(
-      z = 1, mu_t = 0, sigma_t = 1, xi_t = 0, n_obs = 1L
+      z = 1, mu_t = 0, sigma_t = 0, xi_t = 0.1, n_obs = 1L
     ),
-    regexp = "invalid tail measure"
+    regexp = "strictly positive"
   )
 })
 
@@ -419,6 +509,26 @@ test_that("inactive design columns are filled silently", {
                   verbose = FALSE)
   expect_null(active_covariates(fit))
   expect_silent(marginalize(fit, s$df, TRs = 10, n_boot = 20L))
+})
+
+test_that("approach B accepts named ensembles of trajectories", {
+  s <- make_mc_fit()
+  set.seed(7L)
+  lo <- lapply(1:40, function(i) data.frame(x = stats::rnorm(s$n_obs)))
+  hi <- lapply(1:40, function(i) data.frame(x = stats::rnorm(s$n_obs, 1)))
+  res <- marginalize(s$fit, s$df, TRs = c(10, 50), approaches = "B",
+                     mc_sample = list(historical = lo, warmer = hi))
+  expect_identical(res$scenario, rep(c("historical", "warmer"), each = 2L))
+  one <- marginalize(s$fit, s$df, TRs = c(10, 50), approaches = "B",
+                     mc_sample = hi)
+  expect_identical(one$scenario, rep("parametric_mc", 2L))
+  expect_equal(res$RL[3:4], one$RL)
+  expect_true(all(res$RL[3:4] > res$RL[1:2]))
+  expect_error(marginalize(s$fit, s$df, approaches = "B",
+                           mc_sample = list(lo, hi)), "named list")
+  expect_error(marginalize(s$fit, s$df, approaches = "B",
+                           mc_sample = list(a = lo, b = list(data.frame(w = 1)))),
+               "mc_sample\\$b\\[\\[1\\]\\] is missing")
 })
 
 # -----------------------------------------------------------------------------

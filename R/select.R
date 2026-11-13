@@ -50,7 +50,8 @@
                                lambda_grid     = NULL,
                                grad_tol        = 5e-4,
                                shape_lower     = -Inf,
-                               parscale        = NULL) {
+                               parscale        = NULL,
+                               solver          = "bfgs") {
 
   lambda_scaling <- match.arg(lambda_scaling)
 
@@ -94,9 +95,33 @@
   block_lambda <- function(lam_base)
     c(mu = lam_base, sigma = lam_base * ratio_sigma, xi = lam_base * ratio_xi)
 
+  bmap    <- .shape_bound_map(dm, shape_lower)
+  tol_abs <- grad_tol * max(1, n_exc)
+
+  # Screening: if the warm start, with its numerically zero penalized
+  # coefficients set exactly to zero, already satisfies the KKT conditions
+  # at the new lambda, it is a solution there and the optimizer is skipped.
+  # This happens above lambda_max, where every penalized coefficient is zero
+  # and the solution no longer changes with lambda.
+  .kkt_shortcut <- function(lam, init_par) {
+    p0 <- init_par
+    small <- pen_idx_all[abs(p0[pen_idx_all]) < active_tol]
+    p0[small] <- 0
+    core <- .nhpp_eval(p0, dm, y, threshold, obs_per_year, grad = TRUE,
+                       shape_lower = shape_lower)
+    if (!is.finite(core$value) || core$value >= 1e9 ||
+        any(!is.finite(core$grad))) return(NULL)
+    pv <- .penalty_vectors(dm, lam, alpha, penalize_shape, penalty_weights)
+    g  <- core$grad + .penalty_value_grad(p0, pv)$grad
+    if (.kkt_violation_bounded(p0, g, pv, active_tol, bmap) > tol_abs)
+      return(NULL)
+    list(converged = TRUE, par = p0, nllh_raw = core$value)
+  }
+
   .bic_at <- function(lam_base, init_par) {
     lam <- block_lambda(lam_base)
-    res <- .fit_at_lambda(dm, y, threshold,
+    res <- .kkt_shortcut(lam, init_par)
+    if (is.null(res)) res <- .fit_at_lambda(dm, y, threshold,
                           lambda          = lam,
                           alpha           = alpha,
                           penalize_shape  = penalize_shape,
@@ -108,7 +133,8 @@
                           grad_tol        = grad_tol,
                           active_tol      = active_tol,
                           shape_lower     = shape_lower,
-                          parscale        = parscale)
+                          parscale        = parscale,
+                          solver          = solver)
     if (!res$converged || !is.finite(res$nllh_raw))
       return(list(bic = NA_real_, par_smooth = init_par,
                   par_oper = init_par, k_active = NA_integer_,

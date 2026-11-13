@@ -346,3 +346,19 @@ test_that("replicates with fewer than 5 simulated exceedances are dropped", {
   expect_true(all(is.na(b$coef_replicates)))
   expect_true(all(b$coef$n_ok == 0L))
 })
+
+test_that("refits and bootstrap replicates inherit refit = TRUE", {
+  df <- make_pen_df()
+  fit <- fit_nhpp(df, threshold = 18, loc_vars = c("x1", "x2", "x3"),
+                  penalty = "lasso", lambda = 5, refit = TRUE, verbose = FALSE)
+  df2 <- df
+  set.seed(2L)
+  df2$y <- 10 + 2 * df2$x1 + stats::rexp(nrow(df2), 1 / 3)
+  r <- refit_nhpp(fit, df2)
+  expect_true(r$refit)
+  expect_false(is.null(r$par_penalized))
+  b <- bootstrap_coef(fit, df, R = 4, seed = 1, verbose = FALSE)
+  reps <- attr(b, "replicates")
+  # refitted replicates are not shrunk: x1 is close to its refitted value
+  expect_lt(abs(mean(reps[, "mu.x1"]) - coef(fit)[["mu.x1"]]), 0.3)
+})

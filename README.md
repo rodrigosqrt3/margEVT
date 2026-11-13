@@ -1,213 +1,131 @@
-# margEVT: Regularized Point Processes and Stochastic Marginalization for Return Level Inference
+# margEVT: Regularized Point Processes and Stochastic Marginalization for Extremes
 
 [![CRAN status](https://www.r-pkg.org/badges/version/margEVT)](https://CRAN.R-project.org/package=margEVT) &nbsp; [![R-CMD-check](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml/badge.svg)](https://github.com/rodrigosqrt3/margEVT/actions/workflows/r.yml) &nbsp; [![codecov](https://codecov.io/gh/rodrigosqrt3/margEVT/branch/main/graph/badge.svg)](https://app.codecov.io/gh/rodrigosqrt3/margEVT)
 
-`margEVT` is an R package for non-stationary extreme value analysis under covariate-driven regimes. It couples a covariate-driven Non-Homogeneous Poisson Process (NHPP) with (adaptive) elastic-net penalized maximum likelihood and stochastically marginalized return-level estimation, with conditional bootstrap intervals and walk-forward validation.
+`margEVT` fits non-stationary extreme value models in which climate indices
+and other covariates drive the parameters, selects those covariates by
+penalized likelihood, and turns the fitted model into return levels and
+risk measures that integrate the covariates out, instead of fixing them at
+an arbitrary value.
 
----
+## What it does
 
-## 1. Mathematical Framework
+| Task | Functions |
+|---|---|
+| Fit a non-homogeneous Poisson process (NHPP) for threshold exceedances, with LASSO, adaptive LASSO or elastic-net selection of covariates, BIC along the regularization path and an optional unpenalized refit | `fit_nhpp()`, `refit_nhpp()`, `seasonal_harmonics()` |
+| Inspect and diagnose the fit | `summary()`, `coef()`, `predict()`, `fitted()`, `residuals()`, `plot()`, `logLik()`, `AIC()`, `BIC()`, `vcov()`, `confint()`, `simulate()`, `update()` |
+| Handle clustered exceedances | `extremal_index()`, `decluster()` |
+| Return levels: conditional on covariate scenarios (A) or marginal over a VAR generator (B) or resampled years (C) | `marginalize()`, `fit_var_generator()`, `simulate_covariates()`, `rl_table()`, `annual_prob()` |
+| Risk over a planning horizon of several years, stationary or not | `horizon_risk()`, `design_life_level()` |
+| Uncertainty and validation | `bootstrap_nhpp()`, `bootstrap_rl()`, `bootstrap_coef()`, `backtest()` |
 
-### 1.1 Non-Homogeneous Poisson Process (NHPP) Representation
-Exceedances of an extreme threshold $u$ over an observational domain are modeled as a Non-Homogeneous Poisson Process on the product space $\mathcal{S} = [0, 1] \times (u, \infty)$. The time-varying intensity function $\lambda(t, y)$ is parameterized using the location $\mu(t)$, scale $\sigma(t) > 0$, and shape $\xi(t)$ parameters of the Generalized Extreme Value (GEV) distribution:
+## Installation
 
-$$\lambda(t, y) = \frac{1}{\sigma(t)} \left[ 1 + \xi(t) \left( \frac{y - \mu(t)}{\sigma(t)} \right) \right]_{+}^{-1/\xi(t)-1}$$
-
-where $[a]_+ = \max(a, 0)$.
-
-To capture non-stationarity, the parameters are modeled as linear combinations of covariate vectors $\mathbf{x}_t$:
-
-$$\mu(t) = \mu_0 + \sum_{k=1}^{K} \mu_k x_{k,t}$$
-
-$$\log(\sigma(t)) = \phi_0 + \sum_{j=1}^{J} \phi_j x_{j,t}$$
-
-$$\xi(t) = \xi_0 + \sum_{l=1}^{L} \xi_l x_{l,t}$$
-
-The logarithmic parameterization of $\sigma(t) = \exp(\phi(t))$ guarantees positivity. The shape is restricted to $\xi(t) \ge -1/2$ by default (`shape_lower`), the region where the maximum likelihood estimator is regular (Smith, 1985); fits at the bound are handled by an active-set solver.
-
-### 1.2 Penalized Estimation and Optimization
-In high-dimensional covariate settings, parameter estimation is conducted via penalized maximum likelihood. The objective function minimizes the negative log-likelihood $\ell(\boldsymbol{\theta})$ subject to a weighted elastic-net penalty:
-
-$$Q(\boldsymbol{\theta}; \lambda, \alpha) = -\ell(\boldsymbol{\theta}) + \lambda \sum_{k \in \mathcal{P}} w_k \left[ \alpha \sqrt{\theta_k^2 + \varepsilon} + \left( \frac{1 - \alpha}{2} \right) \theta_k^2 \right]$$
-
-where:
-- $\lambda \ge 0$ controls the overall regularization strength.
-- $\alpha \in [0, 1]$ controls the balance between the $\ell_1$ (LASSO) and $\ell_2$ (Ridge) components (setting $\alpha = 1$ recovers the pure LASSO penalty).
-- $w_k$ are coordinate weights: $w_k = 1$ by default, or $w_k = 1/|\tilde\theta_k|^\gamma$ from an unpenalized fit with `penalty_weights = "adaptive"` (the adaptive LASSO).
-- $\varepsilon > 0$ is a small smoothing parameter ensuring differentiability at the origin.
-- $\mathcal{P}$ is the index set of penalized parameters. The baseline intercepts ($\mu_0, \phi_0, \xi_0$) and deterministic seasonal Fourier harmonics are kept unpenalized by construction ($\mathcal{P} \cap \text{unpenalized} = \emptyset$).
-
-The optimization is solved via the quasi-Newton BFGS algorithm (with L-BFGS-B as a fallback) supplied with exact analytical gradients, and convergence is certified by the Karush-Kuhn-Tucker conditions of the penalized problem:
-
-$$\nabla_{\boldsymbol{\theta}} Q(\boldsymbol{\theta}; \lambda, \alpha) = -\nabla_{\boldsymbol{\theta}} \ell(\boldsymbol{\theta}) + \nabla_{\boldsymbol{\theta}} P_{\lambda,\alpha}(\boldsymbol{\theta})$$
-
-The regularization path parameter $\lambda^{\ast}$ is selected by minimizing the Bayesian Information Criterion (BIC). Automatic selection can either use a common scalar penalty for all blocks (`lambda_scaling = "common"`, the default) or score-magnitude calibration across the location, log-scale, and shape blocks (`lambda_scaling = "gradient"`):
-
-$$\text{BIC}(\lambda) = -2\ell(\hat{\boldsymbol{\theta}}_\lambda) + k_\lambda \log(m)$$
-
-where $m$ is the exceedance count supplied to the fitted point-process model and $k_\lambda$ is the number of active parameters under the model's operational tolerance. The factor $\log(m)$ is an event-based model-selection convention, not a universal effective-sample-size identity. Declustering, when required by the application, is performed before calling `fit_nhpp()`.
-
----
-
-## 2. Return Level Inference
-
-Under non-stationarity, traditional definitions of a $T$-year return level are conceptually ill-defined. This package implements three distinct frameworks:
-
-### 2.1 Approach A: Static Conditional Return Level
-The user-specified stochastic covariates are fixed at a scenario $\mathbf{x}^{\ast}$, representing a hypothetical frozen climate state while any deterministic predictors retained in the fitted design are evaluated over the annual block. If every predictor is constant, the conditional return level reduces to the analytical expression:
-
-$$z_T(\mathbf{x}^{\ast}) = \mu(\mathbf{x}^{\ast}) + \frac{\sigma(\mathbf{x}^{\ast})}{\xi(\mathbf{x}^{\ast})} \left[ \left(-\log\left(1 - \frac{1}{T}\right)\right)^{-\xi(\mathbf{x}^{\ast})} - 1 \right]$$
-
-The package evaluates the general conditional annual path numerically, so this approach also accommodates deterministic seasonal terms.
-
-### 2.2 Approach B: Unconditional Parametric Stochastic Marginalization
-To capture long-run risk over the natural variability of the climate system, the non-stationary intensity is integrated over the stationary joint distribution $\Pi$ of the covariate trajectories $\mathbf{v}$:
-
-$$G_{\Pi}(z) = \mathbb{E}_{\{\mathbf{v} \sim \Pi\}} \left\lbrack G(z \mid \mathbf{v}) \right\rbrack = \mathbb{E}_{\{\mathbf{v} \sim \Pi\}} \left\lbrack \exp \left\lbrace -\frac{1}{n_{y}} \sum_{j=1}^{n_{y}} \left\lbrack 1 + \xi(t_{j}) \left\lparen \frac{z - \mu(t_{j} \mid \mathbf{v})}{\sigma(t_{j} \mid \mathbf{v})} \right\rparen \right\rbrack_{{+}}^{-1/\xi(t_{j})} \right\rbrace \right\rbrack$$
-
-The joint distribution $\Pi$ is modeled via a stationary Vector Autoregressive process, $\text{VAR}(p)$, fitted by least squares with Schwarz order selection (a single covariate is a $\text{VAR}(p)$ with $K = 1$). The fitted generator verifies that the companion-root spectral radius is below one before simulation. Independent synthetic annual trajectories are initialized from the fitted stationary Gaussian state distribution at the fitted temporal resolution, Fourier seasonality is re-injected, and $G_{\Pi}(z)$ is estimated via Monte Carlo integration over $n_{mc}$ simulated years. A zero-state burn-in initialization remains available as a sensitivity option:
-
-$$\hat{G}_{\Pi, B}(z) = \frac{1}{n_{mc}} \sum_{r=1}^{n_{mc}} G(z \mid \mathbf{v}^{(r)})$$
-
-The marginalized plug-in return level is recovered numerically from a target crossing satisfying:
-
-$$\hat{G}_{\Pi, B}(z_T^{\Pi}) - \left( 1 - \frac{1}{T} \right) = 0$$
-
-### 2.3 Approach C: Empirical Annual-Block Marginalization
-The trajectory law $\Pi$ is replaced by the empirical distribution of eligible historical annual blocks. If $K$ complete blocks are available, the exact empirical plug-in distribution is
-
-$$G_{\hat\Pi_{\mathrm{emp}}}(z) = \frac{1}{K} \sum_{k=1}^{K} G(z \mid \mathbf{V}_k).$$
-
-The implementation approximates this finite empirical average by sampling `n_boot` complete years with replacement. This preserves the observed within-year covariate paths and is used as a sensitivity benchmark for the parametric trajectory generator.
-
-### 2.4 Uncertainty and Validation
-`bootstrap_rl()`, `bootstrap_coef()` and `bootstrap_nhpp()` give parametric bootstrap intervals for return levels and coefficients, conditional on the selected penalty (with `occurrence = "simulated"`, the number and timing of exceedances are also redrawn). `backtest()` refits the model on expanding training windows and compares the observed annual maxima of the following years with the nominal exceedance rates of approaches B and C. `residuals()` and `plot(fit, type = "qq")` provide time-rescaling diagnostics.
-
----
-
-## 3. Installation
-
-You can install the stable release version of `margEVT` from CRAN:
+From CRAN:
 
 ```r
 install.packages("margEVT")
 ```
 
-Alternatively, you can install the development version from GitHub:
+Development version from GitHub:
 
 ```r
-# install.packages("devtools")
-devtools::install_github("rodrigosqrt3/margEVT")
+# install.packages("remotes")
+remotes::install_github("rodrigosqrt3/margEVT")
 ```
 
----
-
-## 4. Quick-Start Example
-
-This reproducible example simulates a generic non-stationary extreme value process, fits the regularized NHPP model using the LASSO penalty ($\alpha = 1$) with BIC-based $\lambda$ selection, and computes return levels under all three major marginalization frameworks (including the stochastically marginalized Approach B).
+## Quick start
 
 ```r
 library(margEVT)
 
-# =============================================================================
-# 1. Simulate Non-Stationary Extreme Value Data
-# =============================================================================
-set.seed(3)
-n_years    <- 10L
-n_per_year <- 100L
-n          <- n_years * n_per_year
-years      <- rep(2011:(2011 + n_years - 1L), each = n_per_year)
-
-# Simulate 4 generic standardized covariates
-x1 <- rnorm(n, mean = 0, sd = 1)
-x2 <- rnorm(n, mean = 0, sd = 1)
-x3 <- rnorm(n, mean = 0, sd = 1)
-x4 <- rnorm(n, mean = 0, sd = 1)
-
-# Define non-stationary GEV parameters
-# Location varies with x1 and x3; Scale (log) varies with x2 and x4
-mu    <- 15 + 2.0 * x1 + 1.5 * x3
-sigma <- exp(1.2 + 0.3 * x2 + 0.1 * x4)
-xi    <- -0.10  # Bounded upper tail (Weibull domain)
-
-# Generate non-stationary GEV observations via the inverse transform method
-u_rand <- runif(n)
-y      <- mu + sigma * (((-log(u_rand))^(-xi) - 1) / xi)
-
-sim_data <- data.frame(
-  y    = y,
-  x1   = x1,
-  x2   = x2,
-  x3   = x3,
-  x4   = x4,
-  year = years
+# 40 years of weekly data: annual cycle and an autocorrelated index x
+set.seed(2024)
+n_y <- 52; n <- 40 * n_y
+df <- cbind(
+  data.frame(year = rep(1981:2020, each = n_y),
+             x = as.numeric(arima.sim(list(ar = 0.8), n)) * 0.6,
+             z = rnorm(n)),                       # z is irrelevant
+  seasonal_harmonics(rep(seq_len(n_y), 40), period = n_y)
 )
+df$y <- 20 + 3 * df$x + 4 * df$cos1 + 3 * rexp(n)
+u <- quantile(df$y, 0.9)
+df$y <- decluster(df$y, u)                        # one value per cluster
 
-# =============================================================================
-# 2. Fit the Penalized Non-Stationary NHPP Model
-# =============================================================================
-
-fit <- fit_nhpp(
-  df             = sim_data,
-  threshold      = 19,
-  loc_vars       = c("x1", "x2", "x3"),
-  scale_vars     = c("x1", "x2", "x4"),
-  shape_vars     = NULL,       # Stationary shape parameter
-  penalty        = "lasso",
-  alpha          = 1.0,
-  lambda         = "bic",
-  obs_per_year   = 100,        # 100 observations per annual block
-  calc_hessian   = TRUE,
-  verbose        = TRUE
-)
-
-# Inspect estimated parameter coefficients and Hessian conditioning
+# Adaptive LASSO with BIC selection; the harmonics are not penalized
+fit <- fit_nhpp(df, threshold = u,
+                loc_vars = c("cos1", "sen1", "x", "z"),
+                scale_vars = c("x", "z"), free_vars = c("cos1", "sen1"),
+                penalty = "lasso", lambda = "bic",
+                penalty_weights = "adaptive", refit = TRUE,
+                obs_per_year = n_y, verbose = FALSE)
 summary(fit)
+plot(fit, type = "qq")
 
-# Extract raw coefficients
-coef(fit)
+# Return levels: at fixed values of x (A), over a VAR generator (B),
+# over resampled observed years (C)
+gen  <- fit_var_generator(fit, df, vars = "x")
+sims <- simulate_covariates(gen, n_mc = 300, seed = 1)
+rl <- marginalize(fit, df, TRs = c(10, 50, 100),
+                  approaches = c("A", "B", "C"),
+                  scenarios = list(neutral = list(x = 0)),
+                  mc_sample = sims, n_boot = 300, seed = 1)
+rl_table(rl)
 
-# =============================================================================
-# 4. Fit the Parametric VAR(p) Stochastic Generator
-# =============================================================================
-# Automatically deseasonalizes active covariates, selects the optimal lag p
-# via BIC, and fits the multivariate VAR model to the anomalies.
-generator <- fit_var_generator(fit, sim_data)
-
-# Simulate 50 years of stochastic trajectories from the fitted generator,
-# automatically re-injecting the seasonal harmonics.
-mc_sample <- simulate_covariates(generator, n_mc = 50L, n_obs = 100L, seed = 123L)
-
-# =============================================================================
-# 5. Compute Unconditional Return Levels (Core Contribution)
-# =============================================================================
-# Rather than conditioning on a "frozen" covariate state (Approach A),
-# we integrate out covariate uncertainty under both the parametric generator
-# (Approach B) and empirical annual-block marginalization (Approach C).
-rl_long <- marginalize(
-  fit         = fit,
-  data        = sim_data,
-  TRs         = c(2, 5, 10, 50), # Return periods (years)
-  n_obs       = 100L,            # 100 observations per year
-  approaches  = c("A", "B", "C"),# Evaluate all three approaches
-  scenarios   = list("baseline" = list(x1 = 0, x2 = 0, x3 = 0, x4 = 0)),
-  mc_sample   = mc_sample,       # Supplied simulated sample from our VAR(p)
-  n_boot      = 100L,            # 100 bootstrap years for Approach C
-  seed        = 42L,
-  year_col    = "year"
-)
-
-# Convert the long-format return levels into a wide-format risk table
-rl_wide <- rl_table(rl_long)
-print(rl_wide)
+# Probability of exceeding 45 at least once in the next 10 years
+traj <- replicate(200, lapply(sample(1981:2020, 10, replace = TRUE),
+                              function(yr) df[df$year == yr, "x", drop = FALSE]),
+                  simplify = FALSE)
+horizon_risk(fit, z = 45, trajectories = traj)
 ```
 
----
+The vignette, `vignette("margEVT")`, goes through the same analysis step by
+step, with diagnostics, bootstrap intervals and walk-forward validation.
 
-## 5. Citation
+## The model in brief
 
-To cite `margEVT` in publications, please use:
+Exceedances of a threshold $u$ follow a point process whose intensity is
+parameterized by the generalized extreme value (GEV) parameters of the
+annual maximum,
 
-> Villa, R. F. (2026). *Regularized Poisson Point Process Models and Stochastic Marginalization for Return-Level Inference under Covariate-Driven Extremes* (Master's dissertation, Instituto de Matemática e Estatística, Universidade Federal do Rio Grande do Sul, Porto Alegre, Brazil. Advisor: Flavio Ziegelmann).
+$$\Lambda_t\{(y, \infty)\} = \frac{1}{n_y}\left[1 + \xi_t\,\frac{y - \mu_t}{\sigma_t}\right]_+^{-1/\xi_t}, \qquad y > u,$$
 
-Alternatively, run `citation("margEVT")` in R once the package is installed.
+with $\mu_t$, $\log\sigma_t$ and $\xi_t$ linear in the covariates and
+$n_y$ observations per year. The coefficients minimize the negative
+log-likelihood plus a weighted elastic-net penalty; intercepts and seasonal
+harmonics are left unpenalized, the shape is kept at $\xi_t \ge -1/2$
+(the region where maximum likelihood is regular; Smith, 1985), and every
+fit is checked against the Karush-Kuhn-Tucker conditions.
+
+Given one year of covariates $\mathbf{v}$, the annual non-exceedance
+probability is $G(z \mid \mathbf{v}) = \exp\{-\sum_t \Lambda_t(z)\}$. A
+level computed at a fixed $\mathbf{v}$ is conditional on that state. The
+marginal $T$-year return level instead averages over a law $\Pi$ for whole
+years of covariates,
+
+$$G_\Pi(z_T) = \mathrm{E}_\Pi\{G(z_T \mid \mathbf{V})\} = 1 - 1/T,$$
+
+with $\Pi$ given by a stable VAR(p) fitted to the deseasonalized covariates
+(approach B) or by the observed years (approach C). Over a horizon of $L$
+years with trajectories $\mathbf{v}_{1s}, \ldots, \mathbf{v}_{Ls}$, the
+probability of no exceedance is $S^{-1}\sum_s \prod_l G(z \mid
+\mathbf{v}_{ls})$, which gives the horizon risk and the design life level
+(Rootzén and Katz, 2013).
+
+## Citation
+
+Run `citation("margEVT")` in R, or cite:
+
+> Villa, R. F. (2026). *Regularized Poisson Point Process Models and
+> Stochastic Marginalization for Return-Level Inference under
+> Covariate-Driven Extremes*. Master's dissertation, Instituto de Matemática
+> e Estatística, Universidade Federal do Rio Grande do Sul, Porto Alegre,
+> Brazil. Advisor: Flávio A. Ziegelmann.
+
+## References
+
+Rootzén, H. and Katz, R. W. (2013). Design life level: quantifying risk in a
+changing climate. *Water Resources Research*, 49(9), 5964–5972.
+
+Smith, R. L. (1985). Maximum likelihood estimation in a class of nonregular
+cases. *Biometrika*, 72(1), 67–90.

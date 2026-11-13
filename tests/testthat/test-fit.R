@@ -549,3 +549,75 @@ test_that(".par_scale returns NULL when a perturbed point leaves the support", {
   expect_null(margEVT:::.par_scale(c(0, 0), NULL, NULL, 0, 1))
   expect_equal(n_calls, 3L)                             # e0 + one per coordinate
 })
+
+# -----------------------------------------------------------------------------
+# Unpenalized refit on the selected set (relaxed LASSO)
+# -----------------------------------------------------------------------------
+
+test_that("refit = TRUE refits the selected model without penalty", {
+  df <- make_pen_df()
+  args <- list(df = df, threshold = 18, loc_vars = c("x1", "x2", "x3"),
+               penalty = "lasso", lambda = "bic", penalty_weights = "adaptive",
+               verbose = FALSE)
+  fp <- do.call(fit_nhpp, args)
+  fr <- do.call(fit_nhpp, c(args, refit = TRUE))
+  expect_true(fr$refit)
+  expect_false(fp$refit)
+  expect_true(fr$converged)
+  expect_equal(fr$lambda, fp$lambda)
+  expect_equal(fr$par_penalized, fp$par)
+  expect_identical(fr$par_oper != 0, fp$par_oper != 0)
+  sel <- sub("^mu\\.", "", names(fp$par_oper)[fp$par_oper != 0])
+  sel <- setdiff(sel, "(Intercept)")
+  sel <- sel[!grepl("^(sigma|xi)\\.", sel)]
+  fm <- fit_nhpp(df, threshold = 18, loc_vars = sel, penalty = "none",
+                 verbose = FALSE)
+  expect_equal(unname(coef(fr)[names(coef(fm))]), unname(coef(fm)),
+               tolerance = 1e-4)
+  expect_gt(abs(coef(fr)[["mu.x1"]]), abs(coef(fp)[["mu.x1"]]))
+  expect_equal(as.numeric(logLik(fr)), as.numeric(logLik(fm)), tolerance = 1e-6)
+  expect_equal(attr(logLik(fr), "df"), attr(logLik(fp), "df"))
+  expect_output(print(fr), "Refit")
+})
+
+test_that("refit keeps the selected set when a refitted value falls below tol", {
+  df <- make_pen_df()
+  fr <- fit_nhpp(df, threshold = 18, loc_vars = c("x1", "x2", "x3"),
+                 penalty = "lasso", lambda = 5, refit = TRUE, verbose = FALSE)
+  fr$par[["mu.x1"]] <- 1e-4
+  expect_true(margEVT:::.active_parameter_mask(fr, fr$active_tol)[2L])
+  expect_true("x1" %in% active_covariates(fr))
+  expect_false(margEVT:::.active_parameter_mask(fr, 1e-3)[2L])
+})
+
+test_that("refit is ignored without a penalty and validated", {
+  df <- make_pen_df()
+  f0 <- fit_nhpp(df, threshold = 18, loc_vars = "x1", penalty = "none",
+                 verbose = FALSE)
+  f1 <- fit_nhpp(df, threshold = 18, loc_vars = "x1", penalty = "none",
+                 refit = TRUE, verbose = FALSE)
+  expect_false(f1$refit)
+  expect_equal(f1$par, f0$par)
+  expect_error(fit_nhpp(df, threshold = 18, refit = NA), "`refit`")
+})
+
+test_that(".subset_design keeps the requested columns and penalty indices", {
+  df <- make_pen_df()
+  dm <- build_design_matrices(df, loc_vars = c("x1", "x2"), scale_vars = "x3")
+  sd <- margEVT:::.subset_design(dm, c(1L, 3L, 4L, 6L))
+  expect_identical(colnames(sd$X_mu), c("(Intercept)", "x2"))
+  expect_identical(colnames(sd$X_sigma), "(Intercept)")
+  expect_identical(colnames(sd$X_xi), "(Intercept)")
+  expect_identical(sd$idx_pen_mu, 2L)
+  expect_length(sd$idx_pen_sigma, 0L)
+})
+
+test_that("fit_nhpp stores its call, so update() works", {
+  df <- make_pen_df()
+  fit <- fit_nhpp(df, threshold = 18, loc_vars = "x1", penalty = "none",
+                  verbose = FALSE)
+  expect_true(is.call(fit$call))
+  fit2 <- stats::update(fit, threshold = 19)
+  expect_equal(fit2$threshold, 19)
+  expect_lt(fit2$n_exc, fit$n_exc)
+})

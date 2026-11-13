@@ -84,7 +84,9 @@
 #'   Default \code{1L}.
 #' @param verbose Logical. Print progress. Default \code{TRUE}.
 #'
-#' @return A list with three elements:
+#' @return An object of class \code{nhpp_backtest} (a list, returned
+#'   invisibly and printed by \code{\link{print.nhpp_backtest}}) with three
+#'   elements:
 #'   \item{results}{Data frame with one row per validation year, containing
 #'     the observed annual maximum and, for each approach \code{a}, the PIT
 #'     value \code{F_ann_<a>} and exceedance indicators \code{exc_<a>_T<TR>};
@@ -459,10 +461,13 @@ backtest <- function(fit, data, varname,
   ks_res <- if (all(vapply(ks_list, is.null, logical(1L)))) NULL else
     do.call(rbind, ks_list)
 
-  invisible(list(
-    results     = df_results,
-    binom_tests = df_binom,
-    ks_test     = ks_res
+  invisible(structure(
+    list(
+      results     = df_results,
+      binom_tests = df_binom,
+      ks_test     = ks_res
+    ),
+    class = "nhpp_backtest"
   ))
 }
 
@@ -537,10 +542,9 @@ backtest <- function(fit, data, varname,
 # Compute return levels by averaging over a list of covariate data frames.
 .compute_rl_from_cov_list <- function(fit_w, cov_list, TRs, z_lo, z_hi,
                                       n_obs) {
-  big_cov  <- as.data.frame(do.call(rbind, cov_list))
-  params   <- predict_params(fit_w, big_cov)
-  f_annual <- function(z)
-    .annual_exceedance_prob(z, params$mu, params$sigma, params$xi, n_obs)
-  sapply(TRs, function(TR)
-    .find_return_level(TR, f_annual, z_lo, z_hi, tol = 1e-3))
+  big_cov <- as.data.frame(do.call(rbind, cov_list))
+  params  <- predict_params(fit_w, big_cov)
+  curve   <- tryCatch(.level_curve(params, n_obs), error = function(e) NULL)
+  if (is.null(curve)) return(rep(NA_real_, length(TRs)))
+  .solve_return_levels(TRs, curve, z_lo, z_hi, tol = 1e-3)
 }

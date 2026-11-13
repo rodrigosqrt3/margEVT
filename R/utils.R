@@ -120,6 +120,10 @@
   if (is.null(pen_idx)) return(abs(fit$par) > tol)
   keep <- rep(TRUE, length(fit$par))
   keep[pen_idx] <- abs(fit$par[pen_idx]) > tol
+  # A refitted model keeps the set selected at its own tolerance, even if a
+  # refitted coefficient falls below it.
+  if (!is.null(fit$active_set) && isTRUE(all.equal(tol, fit$active_tol)))
+    keep[pen_idx] <- fit$active_set[pen_idx]
   keep
 }
 

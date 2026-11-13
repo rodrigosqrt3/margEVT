@@ -254,17 +254,23 @@ active_covariates <- function(fit, free_cols = NULL, tol = NULL) {
   p_sig <- ncol(dm$X_sigma)
   p_xi  <- ncol(dm$X_xi)
 
+  # A refitted model keeps its selected set (see .active_parameter_mask()).
+  big <- abs(par) > tol
+  if (!is.null(fit$active_set) && isTRUE(all.equal(tol, fit$active_tol))) {
+    pen <- .penalized_parameter_indices(fit)
+    big[pen] <- fit$active_set[pen]
+  }
   beta <- list(
-    stats::setNames(par[seq_len(p_mu)], colnames(dm$X_mu)),
-    stats::setNames(par[p_mu + seq_len(p_sig)], colnames(dm$X_sigma)),
-    stats::setNames(par[p_mu + p_sig + seq_len(p_xi)], colnames(dm$X_xi))
+    stats::setNames(big[seq_len(p_mu)], colnames(dm$X_mu)),
+    stats::setNames(big[p_mu + seq_len(p_sig)], colnames(dm$X_sigma)),
+    stats::setNames(big[p_mu + p_sig + seq_len(p_xi)], colnames(dm$X_xi))
   )
 
   active <- character(0L)
   for (b in beta) {
     cn <- names(b)
     cn <- cn[cn != "(Intercept)" & !.is_harmonic(cn) & !cn %in% free_cols]
-    active <- c(active, cn[abs(b[cn]) > tol])
+    active <- c(active, cn[b[cn]])
   }
 
   active <- unique(active)

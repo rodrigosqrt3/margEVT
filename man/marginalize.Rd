@@ -46,9 +46,14 @@ element is itself a named list of scalar covariate values, passed to
 \code{\link{build_cov_annual}}. If \code{NULL}, a single scenario named
 \code{"default"} with all active covariates set to zero is used.}
 
-\item{mc_sample}{List of data frames for approach B. Each element is one
-simulated year of covariates (\code{n_obs} rows). Required if
-\code{"B" \%in\% approaches}.}
+\item{mc_sample}{Covariate trajectories for approach B: a list of data
+frames, each one year of covariates (\code{n_obs} rows), e.g. from
+\code{\link{simulate_covariates}} or from user-supplied scenarios (such
+as covariates taken from climate projections); or a named list of such
+lists, one ensemble per scenario (for instance
+\code{list(historical = mc_hist, future = mc_fut)}), in which case one
+set of return levels is computed for each and the ensemble name is
+reported in \code{scenario}. Required if \code{"B" \%in\% approaches}.}
 
 \item{interactions}{Named list of interactions passed to
 \code{\link{build_cov_annual}}. Default \code{list()}.}

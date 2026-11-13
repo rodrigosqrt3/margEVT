@@ -107,7 +107,9 @@ Default \code{1L}.}
 \item{verbose}{Logical. Print progress. Default \code{TRUE}.}
 }
 \value{
-A list with three elements:
+An object of class \code{nhpp_backtest} (a list, returned
+  invisibly and printed by \code{\link{print.nhpp_backtest}}) with three
+  elements:
   \item{results}{Data frame with one row per validation year, containing
     the observed annual maximum and, for each approach \code{a}, the PIT
     value \code{F_ann_<a>} and exceedance indicators \code{exc_<a>_T<TR>};

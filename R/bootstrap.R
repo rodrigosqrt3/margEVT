@@ -117,6 +117,9 @@
              calc_hessian    = FALSE,
              scaling         = if (is.null(fit$scaling)) "none" else
                fit$scaling,
+             refit           = isTRUE(fit$refit),
+             solver          = if (is.null(fit$solver)) "bfgs" else
+               fit$solver,
              verbose         = FALSE),
     error = function(e) NULL
   )
@@ -126,7 +129,7 @@
 #'
 #' Refits \code{fit} on \code{data} with the same design (location, scale and
 #' shape covariates, free columns), penalty, activity tolerance, KKT
-#' tolerance and shape bound. By default the penalty level and the penalty
+#' tolerance, shape bound and \code{refit} setting. By default the penalty level and the penalty
 #' weights are those of \code{fit}; \code{lambda = "bic"} re-selects the
 #' penalty and \code{penalty_weights = "adaptive"} recomputes adaptive
 #' weights on \code{data} (as needed, e.g., in walk-forward validation).
@@ -140,7 +143,7 @@
 #' @param init Starting values. Default: the estimate of \code{fit}.
 #'
 #' @return An \code{nhpp_fit} object, or \code{NULL} if the refit failed.
-#'   Check \code{$converged} (KKT certification) before using it.
+#'   Check \code{$converged} (the KKT check) before using it.
 #'
 #' @examples
 #' set.seed(1)
@@ -473,7 +476,8 @@ bootstrap_coef <- function(fit, data,
 #' @inheritParams bootstrap_rl
 #' @param TRs Return periods, or \code{NULL} for coefficient intervals only.
 #'
-#' @return A list with \code{rl} (data frame as in \code{bootstrap_rl}, or
+#' @return An object of class \code{nhpp_boot} (a list, printed by
+#'   \code{\link{print.nhpp_boot}}) with \code{rl} (data frame as in \code{bootstrap_rl}, or
 #'   \code{NULL}), \code{coef} (data frame as in \code{bootstrap_coef}, with
 #'   the share of replicates at zero in \code{p_zero}), and the replicate
 #'   matrices \code{rl_replicates} and \code{coef_replicates}.
@@ -573,7 +577,12 @@ bootstrap_nhpp <- function(fit, data,
                p_zero  = if (length(v)) mean(v == 0) else NA_real_,
                n_ok = length(v), row.names = NULL)
   }))
-  list(rl = rl, coef = coef,
-       rl_replicates = if (k > 0L) rl_mat else NULL,
-       coef_replicates = coef_mat)
+  structure(
+    list(rl = rl, coef = coef,
+         rl_replicates = if (k > 0L) rl_mat else NULL,
+         coef_replicates = coef_mat),
+    info  = list(R = R, level = level, approach = approach,
+                 occurrence = occurrence),
+    class = "nhpp_boot"
+  )
 }

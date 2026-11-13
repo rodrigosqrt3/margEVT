@@ -5,6 +5,7 @@
 \alias{logLik.nhpp_fit}
 \alias{nobs.nhpp_fit}
 \alias{predict.nhpp_fit}
+\alias{fitted.nhpp_fit}
 \title{Log-likelihood, number of observations, and prediction for nhpp_fit}
 \usage{
 \method{logLik}{nhpp_fit}(object, ...)
@@ -12,6 +13,8 @@
 \method{nobs}{nhpp_fit}(object, ...)
 
 \method{predict}{nhpp_fit}(object, newdata = NULL, operational = TRUE, ...)
+
+\method{fitted}{nhpp_fit}(object, operational = TRUE, ...)
 }
 \arguments{
 \item{object}{An \code{nhpp_fit} object.}
@@ -27,6 +30,9 @@
 \code{logLik()}: an object of class \code{logLik}.
   \code{nobs()}: the number of exceedances. \code{predict()}: a list with
   components \code{mu}, \code{sigma}, \code{xi}.
+
+\code{fitted()}: a data frame with the fitted \code{mu},
+  \code{sigma} and \code{xi} at every observation.
 }
 \description{
 \code{logLik()} returns the unpenalized log-likelihood at the operational

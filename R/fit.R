@@ -29,7 +29,9 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
                          kkt = NA_real_, path = NULL, y = NULL,
                          grad_tol = 5e-4, adaptive_gamma = 1,
                          shape_lower = -Inf, shape_at_bound = FALSE,
-                         scaling = "none") {
+                         scaling = "none", refit = FALSE,
+                         par_penalized = NULL, active_set = NULL,
+                         call = NULL, solver = "bfgs") {
   structure(
     list(
       par             = par,
@@ -60,7 +62,12 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
       adaptive_gamma  = adaptive_gamma,
       shape_lower     = shape_lower,
       shape_at_bound  = shape_at_bound,
-      scaling         = scaling
+      scaling         = scaling,
+      refit           = refit,
+      par_penalized   = par_penalized,
+      active_set      = active_set,
+      call            = call,
+      solver          = solver
     ),
     class = "nhpp_fit"
   )
@@ -73,6 +80,24 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
   c(dm$idx_pen_mu,
     p_mu + dm$idx_pen_sigma,
     if (isTRUE(penalize_shape)) p_mu + p_sig + dm$idx_pen_xi else integer(0L))
+}
+
+# Design restricted to the coordinates `keep` of the full parameter vector
+# (intercepts and unpenalized columns are always kept by the caller).
+.subset_design <- function(dm, keep) {
+  p_mu  <- ncol(dm$X_mu)
+  p_sig <- ncol(dm$X_sigma)
+  k_mu  <- keep[keep <= p_mu]
+  k_sig <- keep[keep > p_mu & keep <= p_mu + p_sig] - p_mu
+  k_xi  <- keep[keep > p_mu + p_sig] - p_mu - p_sig
+  list(
+    X_mu          = dm$X_mu[, k_mu, drop = FALSE],
+    X_sigma       = dm$X_sigma[, k_sig, drop = FALSE],
+    X_xi          = dm$X_xi[, k_xi, drop = FALSE],
+    idx_pen_mu    = which(k_mu %in% dm$idx_pen_mu),
+    idx_pen_sigma = which(k_sig %in% dm$idx_pen_sigma),
+    idx_pen_xi    = which(k_xi %in% dm$idx_pen_xi)
+  )
 }
 
 # Parameter scales for optim(): s_k = 1 / sqrt(|H_kk|), with H_kk the
@@ -154,7 +179,8 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
                            maxit = 10000L, calc_hessian = FALSE,
                            obs_per_year = 365.25, penalty_weights = NULL,
                            grad_tol = 5e-4, active_tol = 1e-2,
-                           shape_lower = -Inf, parscale = NULL) {
+                           shape_lower = -Inf, parscale = NULL,
+                           solver = "bfgs") {
 
   p_mu  <- ncol(dm$X_mu)
   p_sig <- ncol(dm$X_sigma)
@@ -287,7 +313,16 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
   at_bound <- function(p) !is.null(bmap) &&
     any(drop(bmap$A %*% p[bmap$idx]) - bmap$lower < 1e-6)
   res1 <- res2 <- res3 <- NULL
-  if (at_bound(init)) {
+  # Proximal Newton first when requested; BFGS and its fallbacks only if it
+  # does not apply or does not pass the KKT check.
+  if (identical(solver, "newton"))
+    res1 <- finish(tryCatch(
+      .prox_newton(init, dm, y, threshold, pv, obs_per_year, shape_lower,
+                   bmap, tol_abs, active_tol),
+      error = function(e) NULL))
+  if (ok(res1)) {
+    # done
+  } else if (at_bound(init)) {
     res1 <- run_active(init)
   } else {
     res1 <- run(init, "BFGS")
@@ -342,13 +377,15 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
                               maxit = 10000L, grad_tol = 5e-4,
                               active_tol = 1e-2,
                               ridge_lambdas = c(0.1, 1, 10),
-                              shape_lower = -Inf, parscale = NULL) {
+                              shape_lower = -Inf, parscale = NULL,
+                              solver = "bfgs") {
   pen_idx <- .penalized_index(dm, penalize_shape)
   base <- .fit_at_lambda(dm, y, threshold, lambda = 0, alpha = 1,
                          penalize_shape = penalize_shape, init = init,
                          maxit = maxit, obs_per_year = obs_per_year,
                          grad_tol = grad_tol, active_tol = active_tol,
-                         shape_lower = shape_lower, parscale = parscale)
+                         shape_lower = shape_lower, parscale = parscale,
+                         solver = solver)
   source <- "mle"
   if (!isTRUE(base$converged)) {
     source <- NA_character_
@@ -357,7 +394,8 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
                              penalize_shape = penalize_shape, init = init,
                              maxit = maxit, obs_per_year = obs_per_year,
                              grad_tol = grad_tol, active_tol = active_tol,
-                             shape_lower = shape_lower, parscale = parscale)
+                             shape_lower = shape_lower, parscale = parscale,
+                             solver = solver)
       if (isTRUE(base$converged)) {
         source <- paste0("ridge(lambda=", lr, ")")
         break
@@ -463,6 +501,25 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
 #'   unscaled optimization of earlier versions. Scaling changes the path of the
 #'   optimizer, not the problem: every reported fit satisfies the same KKT
 #'   conditions, and estimates differ only within the optimizer tolerance.
+#' @param refit Logical. If \code{TRUE} and a penalty is used, the model is
+#'   refitted without penalty on the selected set (penalized coefficients
+#'   with \eqn{|\hat\theta_k| \ge} \code{active_tol}; the others are fixed at
+#'   zero), as in the relaxed LASSO. The penalty only selects the model and
+#'   the reported coefficients are free of the LASSO shrinkage, which biases
+#'   return levels towards zero effects. \eqn{\lambda} is selected exactly
+#'   as with \code{refit = FALSE}. The penalized solution is kept in
+#'   \code{par_penalized}. Default \code{FALSE}.
+#' @param solver Optimizer. \code{"bfgs"} (default): quasi-Newton on the
+#'   smoothed elastic-net objective, with L-BFGS-B and active-set fallbacks.
+#'   \code{"newton"}: proximal Newton with the analytical Hessian, the exact
+#'   penalty and coordinate descent for the penalized quadratic step, which
+#'   sets penalized coefficients exactly to zero and usually needs far fewer
+#'   likelihood evaluations along a regularization path; it falls back to
+#'   \code{"bfgs"} where it does not apply (Gumbel-limit shapes, a bounded
+#'   shape with shape covariates) or fails the KKT check. Both solve the
+#'   same problem and every reported fit passes the same KKT check, so
+#'   estimates agree within the optimizer tolerance; \code{"bfgs"}
+#'   reproduces results of earlier versions.
 #' @param verbose Logical. Print progress during BIC grid search and
 #'   convergence warnings. Default \code{TRUE}.
 #'
@@ -470,7 +527,11 @@ new_nhpp_fit <- function(par, par_oper, dm, threshold, nllh_pen, nllh_raw,
 #'   solution (\code{par}) and the operational activity-thresholded solution
 #'   (\code{par_oper}), it stores the penalty weights, the scaled KKT
 #'   violation (\code{kkt}), and, for \code{lambda = "bic"}, the evaluated
-#'   regularization path (\code{path}).
+#'   regularization path (\code{path}). With \code{refit = TRUE}, \code{par}
+#'   and \code{par_oper} hold the refitted coefficients, \code{kkt} and
+#'   \code{converged} refer to the refit (and require the penalized fit to
+#'   have converged too), \code{nllh_pen} is the penalized objective of the
+#'   selection fit, and \code{active_set} flags the selected coordinates.
 #'
 #' @seealso \code{\link{marginalize}}, \code{\link{bootstrap_coef}},
 #'   \code{\link{plot.nhpp_fit}}
@@ -516,8 +577,12 @@ fit_nhpp <- function(df, threshold,
                      maxit           = 10000L,
                      calc_hessian    = FALSE,
                      scaling         = c("auto", "none"),
+                     refit           = FALSE,
+                     solver          = c("bfgs", "newton"),
                      verbose         = TRUE) {
 
+  call <- match.call()
+  solver <- match.arg(solver)
   if (!is.data.frame(df))
     stop("fit_nhpp: `df` must be a data frame.")
   if (!"y" %in% names(df))
@@ -551,6 +616,8 @@ fit_nhpp <- function(df, threshold,
     stop("fit_nhpp: `calc_hessian` must be TRUE or FALSE.")
   if (!is.logical(verbose) || length(verbose) != 1L || is.na(verbose))
     stop("fit_nhpp: `verbose` must be TRUE or FALSE.")
+  if (!is.logical(refit) || length(refit) != 1L || is.na(refit))
+    stop("fit_nhpp: `refit` must be TRUE or FALSE.")
   if (!is.null(lambda_grid) &&
       (!is.numeric(lambda_grid) || length(lambda_grid) < 2L ||
        any(!is.finite(lambda_grid)) || any(lambda_grid <= 0)))
@@ -658,7 +725,7 @@ fit_nhpp <- function(df, threshold,
                               maxit = maxit, grad_tol = grad_tol,
                               active_tol = active_tol,
                               shape_lower = shape_lower,
-                              parscale = parscale)
+                              parscale = parscale, solver = solver)
       pen_weights    <- aw$weights
       weights_source <- paste0("adaptive: ", aw$source)
       if (verbose)
@@ -703,7 +770,8 @@ fit_nhpp <- function(df, threshold,
       lambda_grid     = lambda_grid,
       grad_tol        = grad_tol,
       shape_lower     = shape_lower,
-      parscale        = parscale
+      parscale        = parscale,
+      solver          = solver
     )
     lambda_resolved <- sel$lambda
     start <- sel$par
@@ -731,17 +799,50 @@ fit_nhpp <- function(df, threshold,
                         grad_tol        = grad_tol,
                         active_tol      = active_tol,
                         shape_lower     = shape_lower,
-                        parscale        = parscale)
-
-  if (!res$converged && verbose)
-    warning("fit_nhpp: optimizer did not converge (KKT check failed).")
+                        parscale        = parscale,
+                        solver          = solver)
 
   par_hat <- res$par
   names(par_hat) <- par_names
 
   pen_idx_all <- .penalized_index(dm, penalize_shape)
+  small <- pen_idx_all[abs(par_hat[pen_idx_all]) < active_tol]
+
+  # Relaxed LASSO: unpenalized refit on the selected coordinates.
+  par_penalized <- NULL
+  active_set    <- NULL
+  do_refit <- isTRUE(refit) && penalty != "none" && length(pen_idx_all) > 0L
+  if (do_refit) {
+    keep <- setdiff(seq_along(par_hat), small)
+    rr <- .fit_at_lambda(.subset_design(dm, keep), y, threshold,
+                         lambda          = 0,
+                         alpha           = alpha,
+                         penalize_shape  = penalize_shape,
+                         init            = par_hat[keep],
+                         maxit           = maxit,
+                         calc_hessian    = calc_hessian,
+                         obs_per_year    = obs_per_year,
+                         grad_tol        = grad_tol,
+                         active_tol      = active_tol,
+                         shape_lower     = shape_lower,
+                         parscale        = if (is.null(parscale)) NULL else
+                           parscale[keep],
+                         solver          = solver)
+    par_penalized <- par_hat
+    par_hat <- stats::setNames(numeric(length(par_hat)), par_names)
+    par_hat[keep] <- rr$par
+    active_set <- stats::setNames(seq_along(par_hat) %in% keep, par_names)
+    res$converged <- isTRUE(res$converged) && isTRUE(rr$converged)
+    res$kkt       <- rr$kkt
+    res$hessian   <- rr$hessian
+    res$nllh_raw  <- rr$nllh_raw
+    small <- integer(0L)
+  }
+
+  if (!res$converged && verbose)
+    warning("fit_nhpp: optimizer did not converge (KKT check failed).")
+
   par_oper <- par_hat
-  small <- pen_idx_all[abs(par_oper[pen_idx_all]) < active_tol]
   if (length(small) > 0L) par_oper[small] <- 0
   nllh_oper <- pp_nllh(par_oper, dm, y, threshold,
                        lambda = 0, alpha = alpha,
@@ -784,7 +885,12 @@ fit_nhpp <- function(df, threshold,
     shape_lower     = shape_lower,
     shape_at_bound  = is.finite(shape_lower) &&
       min(fitted_from(par_hat)$xi) - shape_lower < 1e-7,
-    scaling         = scaling
+    scaling         = scaling,
+    refit           = do_refit,
+    par_penalized   = par_penalized,
+    active_set      = active_set,
+    call            = call,
+    solver          = solver
   )
 }
 
@@ -821,6 +927,10 @@ print.nhpp_fit <- function(x, ...) {
     cat(sprintf("  Weights      : %s\n",  x$weights_source))
   cat(sprintf("  Alpha        : %s\n",    .format_lambda(x$alpha)))
   cat(sprintf("  Converged    : %s\n",    x$converged))
+  if (isTRUE(x$refit))
+    cat("  Refit        : unpenalized on the selected set\n")
+  if (identical(x$solver, "newton"))
+    cat("  Solver       : proximal Newton\n")
   if (isTRUE(x$shape_at_bound))
     cat(sprintf("  Shape bound  : active (xi >= %.3g)\n", x$shape_lower))
   cat(sprintf("  nllh (raw)   : %.4f\n",  x$nllh_raw))

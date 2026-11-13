@@ -134,3 +134,94 @@ test_that(".par_lapply gives identical results serially and in parallel", {
   expect_identical(margEVT:::.par_lapply(1:3, f, cores = 1L), as.list((1:3)^2))
   expect_identical(margEVT:::.par_lapply(1:3, f, cores = 2L), as.list((1:3)^2))
 })
+
+test_that("fitted returns the fitted parameters", {
+  s <- make_methods_fit()
+  fv <- fitted(s$fit)
+  expect_s3_class(fv, "data.frame")
+  expect_identical(names(fv), c("mu", "sigma", "xi"))
+  expect_equal(nrow(fv), nrow(s$df))
+  expect_equal(fv$mu, predict(s$fit)$mu)
+})
+
+test_that("vcov inverts the observed information over the active parameters", {
+  set.seed(21L)
+  n <- 3000L
+  df <- data.frame(x = stats::rnorm(n))
+  df$y <- 10 + 1.5 * df$x + stats::rexp(n, 1 / 3)
+  fit <- fit_nhpp(df, threshold = 17, loc_vars = "x", penalty = "none",
+                  calc_hessian = TRUE, verbose = FALSE)
+  V <- vcov(fit)
+  expect_identical(rownames(V), names(fit$par))
+  expect_equal(V, t(V))
+  expect_true(all(eigen(V, only.values = TRUE)$values > 0))
+  expect_equal(unname(V), unname(solve(fit$hessian)), tolerance = 1e-3)
+  ci <- confint(fit)
+  expect_identical(rownames(ci), names(fit$par))
+  expect_true(all(ci[, 1] < fit$par & fit$par < ci[, 2]))
+  expect_equal(unname(ci[, 2] - ci[, 1]),
+               unname(2 * stats::qnorm(0.975) * sqrt(diag(V))))
+  expect_identical(rownames(confint(fit, "mu.x")), "mu.x")
+  expect_identical(rownames(confint(fit, 2)), "mu.x")
+  expect_identical(colnames(confint(fit, level = 0.9)), c("5 %", "95 %"))
+  expect_error(confint(fit, "mu.z"), "active parameters")
+  expect_error(confint(fit, level = 2), "level")
+})
+
+test_that("vcov drops inactive coefficients and warns for shrunk fits", {
+  s <- make_methods_fit(penalty = "lasso", lambda = 100)
+  expect_warning(V <- vcov(s$fit), "shrunk")
+  expect_false("mu.z" %in% rownames(V))
+  fit_r <- fit_nhpp(s$df, threshold = 17, loc_vars = c("x", "z"),
+                    penalty = "lasso", lambda = 100, refit = TRUE,
+                    verbose = FALSE)
+  expect_no_warning(vcov(fit_r))
+  legacy <- s$fit
+  legacy$y <- NULL
+  expect_error(suppressWarnings(vcov(legacy)), "observed")
+})
+
+test_that("simulate draws exceedance series from the fitted model", {
+  s <- make_methods_fit()
+  u <- s$fit$threshold
+  set.seed(5L)
+  before <- stats::runif(1L)
+  set.seed(5L)
+  sims <- simulate(s$fit, nsim = 3, seed = 9L)
+  expect_identical(stats::runif(1L), before)            # caller stream kept
+  expect_identical(dim(sims), c(nrow(s$df), 3L))
+  expect_identical(names(sims), paste0("sim_", 1:3))
+  expect_true(all(as.matrix(sims) >= u))
+  expect_identical(simulate(s$fit, nsim = 3, seed = 9L), sims)
+  expect_identical(attr(sims, "seed"), 9L)
+  rate <- mean(colSums(sims > u))
+  expect_lt(abs(rate - s$fit$n_exc) / s$fit$n_exc, 0.15)
+  fx <- simulate(s$fit, seed = 1L, occurrence = "fixed")
+  expect_identical(which(fx$sim_1 > u), which(s$df$y > u))
+  df2 <- s$df
+  df2$y <- sims$sim_1
+  f2 <- fit_nhpp(df2, threshold = u, loc_vars = "x", penalty = "none",
+                 verbose = FALSE)
+  expect_true(f2$converged)
+  expect_error(simulate(s$fit, nsim = 0), "nsim")
+  legacy <- s$fit
+  legacy$y <- NULL
+  expect_error(simulate(legacy), "observed series")
+  outside <- s$fit
+  n <- length(outside$fitted_oper$mu)
+  outside$fitted_oper <- list(mu = rep(u + 10, n), sigma = rep(1, n),
+                              xi = rep(1, n))          # u below lower endpoint
+  expect_error(simulate(outside, seed = 1L), "outside the fitted support")
+})
+
+test_that("vcov warns at the shape bound and rejects singular information", {
+  s <- make_methods_fit()
+  at_bound <- s$fit
+  at_bound$shape_at_bound <- TRUE
+  expect_warning(vcov(at_bound), "shape bound")
+  df <- s$df
+  df$x2 <- df$x                                       # collinear covariates
+  fit <- fit_nhpp(df, threshold = s$fit$threshold, loc_vars = c("x", "x2"),
+                  penalty = "none", verbose = FALSE)
+  expect_error(suppressWarnings(vcov(fit)), "singular")
+})

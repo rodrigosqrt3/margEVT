@@ -27,6 +27,8 @@ fit_nhpp(
   maxit = 10000L,
   calc_hessian = FALSE,
   scaling = c("auto", "none"),
+  refit = FALSE,
+  solver = c("bfgs", "newton"),
   verbose = TRUE
 )
 }
@@ -119,6 +121,27 @@ unscaled optimization of earlier versions. Scaling changes the path of the
 optimizer, not the problem: every reported fit satisfies the same KKT
 conditions, and estimates differ only within the optimizer tolerance.}
 
+\item{refit}{Logical. If \code{TRUE} and a penalty is used, the model is
+refitted without penalty on the selected set (penalized coefficients
+with \eqn{|\hat\theta_k| \ge} \code{active_tol}; the others are fixed at
+zero), as in the relaxed LASSO. The penalty only selects the model and
+the reported coefficients are free of the LASSO shrinkage, which biases
+return levels towards zero effects. \eqn{\lambda} is selected exactly
+as with \code{refit = FALSE}. The penalized solution is kept in
+\code{par_penalized}. Default \code{FALSE}.}
+
+\item{solver}{Optimizer. \code{"bfgs"} (default): quasi-Newton on the
+smoothed elastic-net objective, with L-BFGS-B and active-set fallbacks.
+\code{"newton"}: proximal Newton with the analytical Hessian, the exact
+penalty and coordinate descent for the penalized quadratic step, which
+sets penalized coefficients exactly to zero and usually needs far fewer
+likelihood evaluations along a regularization path; it falls back to
+\code{"bfgs"} where it does not apply (Gumbel-limit shapes, a bounded
+shape with shape covariates) or fails the KKT check. Both solve the
+same problem and every reported fit passes the same KKT check, so
+estimates agree within the optimizer tolerance; \code{"bfgs"}
+reproduces results of earlier versions.}
+
 \item{verbose}{Logical. Print progress during BIC grid search and
 convergence warnings. Default \code{TRUE}.}
 }
@@ -127,7 +150,11 @@ An object of class \code{nhpp_fit}. Besides the smooth optimizer
   solution (\code{par}) and the operational activity-thresholded solution
   (\code{par_oper}), it stores the penalty weights, the scaled KKT
   violation (\code{kkt}), and, for \code{lambda = "bic"}, the evaluated
-  regularization path (\code{path}).
+  regularization path (\code{path}). With \code{refit = TRUE}, \code{par}
+  and \code{par_oper} hold the refitted coefficients, \code{kkt} and
+  \code{converged} refer to the refit (and require the penalized fit to
+  have converged too), \code{nllh_pen} is the penalized objective of the
+  selection fit, and \code{active_set} flags the selected coordinates.
 }
 \description{
 Fits a peaks-over-threshold point process model via penalized maximum

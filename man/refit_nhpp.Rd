@@ -27,12 +27,12 @@ refit_nhpp(
 }
 \value{
 An \code{nhpp_fit} object, or \code{NULL} if the refit failed.
-  Check \code{$converged} (KKT certification) before using it.
+  Check \code{$converged} (the KKT check) before using it.
 }
 \description{
 Refits \code{fit} on \code{data} with the same design (location, scale and
 shape covariates, free columns), penalty, activity tolerance, KKT
-tolerance and shape bound. By default the penalty level and the penalty
+tolerance, shape bound and \code{refit} setting. By default the penalty level and the penalty
 weights are those of \code{fit}; \code{lambda = "bic"} re-selects the
 penalty and \code{penalty_weights = "adaptive"} recomputes adaptive
 weights on \code{data} (as needed, e.g., in walk-forward validation).

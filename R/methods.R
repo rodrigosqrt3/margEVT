@@ -187,6 +187,173 @@ predict.nhpp_fit <- function(object, newdata = NULL, operational = TRUE, ...) {
   predict_params(object, newdata = newdata, operational = operational)
 }
 
+#' @rdname nhpp_fit-methods
+#' @return \code{fitted()}: a data frame with the fitted \code{mu},
+#'   \code{sigma} and \code{xi} at every observation.
+#' @export
+fitted.nhpp_fit <- function(object, operational = TRUE, ...) {
+  as.data.frame(predict_params(object, operational = operational))
+}
+
+
+#' Wald covariance matrix and confidence intervals for nhpp_fit
+#'
+#' \code{vcov()} inverts the observed information, the Hessian of the
+#' unpenalized negative log-likelihood at the operational estimator, over the
+#' active parameters; inactive coefficients are fixed at zero and left out.
+#' \code{confint()} gives the corresponding Wald intervals.
+#'
+#' These are conditional on the selected model: they do not account for the
+#' selection, and for a penalized fit without \code{refit = TRUE} they are
+#' centred at shrunk estimates (a warning is issued). They are invalid when
+#' the shape bound is active (the estimate is on the boundary of the
+#' parameter space), and they treat exceedances as independent, which
+#' understates the uncertainty for clustered data that were not declustered
+#' (see \code{\link{decluster}}). \code{\link{bootstrap_coef}} gives
+#' percentile intervals from the parametric bootstrap.
+#'
+#' @param object An \code{nhpp_fit} object fitted with \code{margEVT} 0.4.0
+#'   or later (the observed series is stored in the object).
+#' @param parm Parameters for \code{confint()}: names or indices among the
+#'   active parameters. Default: all active parameters.
+#' @param level Confidence level. Default \code{0.95}.
+#' @param ... Ignored.
+#'
+#' @return \code{vcov()}: a symmetric matrix over the active parameters.
+#'   \code{confint()}: a matrix with one row per parameter and columns for the
+#'   lower and upper limits.
+#'
+#' @examples
+#' set.seed(1)
+#' df <- data.frame(x = rnorm(1500))
+#' df$y <- 10 + df$x + rexp(1500, 1 / 3)
+#' fit <- fit_nhpp(df, threshold = 18, loc_vars = "x", penalty = "none",
+#'                 verbose = FALSE)
+#' sqrt(diag(vcov(fit)))
+#' confint(fit)
+#'
+#' @name nhpp_fit-wald
+NULL
+
+#' @rdname nhpp_fit-wald
+#' @export
+vcov.nhpp_fit <- function(object, ...) {
+  if (is.null(object$y))
+    stop("vcov.nhpp_fit: the fitted object does not store the observed ",
+         "series; refit with margEVT >= 0.4.0.")
+  if (!identical(object$penalty, "none") && !isTRUE(object$refit))
+    warning("vcov.nhpp_fit: penalized fit without refit; the estimates are ",
+            "shrunk and the standard errors ignore the penalty. ",
+            "Consider fit_nhpp(..., refit = TRUE).")
+  if (isTRUE(object$shape_at_bound))
+    warning("vcov.nhpp_fit: the shape bound is active; Wald standard errors ",
+            "are not valid at the boundary.")
+  par  <- if (is.null(object$par_oper)) object$par else object$par_oper
+  keep <- which(.active_parameter_mask(object, .fit_tol(object, NULL,
+                                                        "vcov.nhpp_fit")))
+  full <- function(p) { q <- par; q[keep] <- p; q }
+  fn <- function(p) pp_nllh(full(p), object$dm, object$y, object$threshold,
+                            lambda = 0, obs_per_year = object$obs_per_year)
+  gr <- function(p) pp_grad(full(p), object$dm, object$y, object$threshold,
+                            lambda = 0, obs_per_year = object$obs_per_year)[keep]
+  H <- stats::optimHess(par[keep], fn, gr)
+  H <- (H + t(H)) / 2
+  V <- tryCatch(solve(H), error = function(e) NULL)
+  if (is.null(V) || any(!is.finite(V)) || any(diag(V) <= 0))
+    stop("vcov.nhpp_fit: the observed information is singular or not ",
+         "positive definite.")
+  dimnames(V) <- list(names(par)[keep], names(par)[keep])
+  V
+}
+
+#' @rdname nhpp_fit-wald
+#' @export
+confint.nhpp_fit <- function(object, parm, level = 0.95, ...) {
+  if (!is.numeric(level) || length(level) != 1L || !is.finite(level) ||
+      level <= 0 || level >= 1)
+    stop("confint.nhpp_fit: `level` must lie strictly between 0 and 1.")
+  V   <- vcov.nhpp_fit(object)
+  est <- if (is.null(object$par_oper)) object$par else object$par_oper
+  est <- est[rownames(V)]
+  if (missing(parm)) parm <- names(est)
+  if (is.numeric(parm)) parm <- names(est)[parm]
+  if (any(is.na(parm)) || !all(parm %in% names(est)))
+    stop("confint.nhpp_fit: `parm` must name active parameters.")
+  a  <- (1 - level) / 2
+  se <- sqrt(diag(V))[parm]
+  q  <- stats::qnorm(1 - a)
+  out <- cbind(est[parm] - q * se, est[parm] + q * se)
+  dimnames(out) <- list(parm, sprintf("%.3g %%", 100 * c(a, 1 - a)))
+  out
+}
+
+
+#' Simulate series from a fitted nhpp_fit model
+#'
+#' Simulates new series of threshold exceedances from the fitted model at the
+#' observed covariates: in every period an exceedance occurs with probability
+#' \eqn{1 - \exp(-\tau_t / n_y)}, \eqn{\tau_t} the fitted exceedance rate at
+#' the threshold (\code{occurrence = "simulated"}), or at the observed
+#' exceedance times (\code{"fixed"}), and its size is drawn from the implied
+#' generalized Pareto law. The model says nothing below the threshold, so
+#' periods without an exceedance are set to the threshold (they do not
+#' exceed it), which is the convention of \code{\link{decluster}} and lets a
+#' simulated series be refitted directly. This is the scheme of the
+#' parametric bootstrap (\code{\link{bootstrap_rl}}).
+#'
+#' @param object An \code{nhpp_fit} object fitted with \code{margEVT} 0.4.0
+#'   or later.
+#' @param nsim Number of series. Default \code{1}.
+#' @param seed Integer seed, or \code{NULL} to use the current random-number
+#'   stream. When supplied, the caller's stream is preserved.
+#' @param occurrence \code{"simulated"} (default) or \code{"fixed"}.
+#' @param ... Ignored.
+#'
+#' @return A data frame with \code{nsim} columns \code{sim_1}, ...; each has
+#'   the length of the fitted series. The seed is attached as attribute
+#'   \code{"seed"}.
+#'
+#' @examples
+#' set.seed(1)
+#' df <- data.frame(x = rnorm(1500))
+#' df$y <- 10 + df$x + rexp(1500, 1 / 3)
+#' fit <- fit_nhpp(df, threshold = 18, loc_vars = "x", penalty = "none",
+#'                 verbose = FALSE)
+#' sims <- simulate(fit, nsim = 2, seed = 1)
+#' colSums(sims > 18)
+#'
+#' @importFrom stats simulate
+#' @export
+simulate.nhpp_fit <- function(object, nsim = 1, seed = NULL,
+                              occurrence = c("simulated", "fixed"), ...) {
+  if (is.null(object$y))
+    stop("simulate.nhpp_fit: the fitted object does not store the observed ",
+         "series; refit with margEVT >= 0.4.0.")
+  if (!is.numeric(nsim) || length(nsim) != 1L || !is.finite(nsim) || nsim < 1)
+    stop("simulate.nhpp_fit: `nsim` must be a positive integer.")
+  .validate_seed(seed, "simulate.nhpp_fit")
+  occurrence <- match.arg(occurrence)
+  u   <- object$threshold
+  prm <- predict_params(object)
+  p_occ <- if (occurrence == "simulated") {
+    tau <- .tail_measure_at_level(u, prm$mu, prm$sigma, prm$xi)
+    if (any(!is.finite(tau)))
+      stop("simulate.nhpp_fit: the threshold lies outside the fitted support.")
+    -expm1(-tau / object$obs_per_year)
+  } else NULL
+  exc <- which(object$y > u)
+  sims <- .maybe_seeded(seed, lapply(seq_len(as.integer(nsim)), function(i) {
+    idx <- if (is.null(p_occ)) exc else which(stats::runif(length(p_occ)) < p_occ)
+    out <- rep(u, length(object$y))
+    if (length(idx) > 0L)
+      out[idx] <- u + .simulate_exceedances(prm$mu, prm$sigma, prm$xi, u, idx)
+    out
+  }))
+  out <- as.data.frame(stats::setNames(sims, paste0("sim_", seq_along(sims))))
+  attr(out, "seed") <- seed
+  out
+}
+
 
 #' Transformed residuals of a fitted nhpp_fit model
 #'

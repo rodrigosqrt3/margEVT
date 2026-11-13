@@ -1,7 +1,7 @@
 Package: margEVT
 Type: Package
 Title: Regularized Point Processes and Stochastic Marginalization for Extremes
-Version: 0.5.0
+Version: 0.6.0
 Authors@R: c(
     person("Rodrigo Fonseca", "Villa", email = "rodrigo03.villa@gmail.com",
            role = c("aut", "cre"),
@@ -14,26 +14,32 @@ Description: Implements a non-stationary extreme value analysis framework
     Provides methods for estimating conditional return levels and
     unconditional (marginalized) return levels via parametric stochastic
     integration over stable vector autoregressive VAR(p) covariate
-    trajectories, or non-parametric annual-block resampling. Supports
-    block-specific penalty controls, BIC selection along a regularization
-    path, Karush-Kuhn-Tucker convergence checks, time-rescaling residual
-    diagnostics, conditional parametric bootstrap inference, and
+    trajectories, or non-parametric annual-block resampling, and risk over
+    planning horizons (design life levels) under covariate scenarios.
+    Supports block-specific penalty controls, BIC selection along a
+    regularization path, unpenalized refitting of the selected model,
+    Karush-Kuhn-Tucker convergence checks, declustering, time-rescaling
+    residual diagnostics, conditional parametric bootstrap inference, and
     walk-forward assessment.
 License: GPL (>= 3)
 Encoding: UTF-8
 URL: https://github.com/rodrigosqrt3/margEVT
 BugReports: https://github.com/rodrigosqrt3/margEVT/issues
-RoxygenNote: 7.3.3
 Imports:
     graphics,
     grDevices,
     parallel,
+    Rcpp,
     stats,
     utils
+LinkingTo:
+    Rcpp
 Suggests:
+    extRemes,
     knitr,
     rmarkdown,
     testthat (>= 3.0.0),
     vars
 VignetteBuilder: knitr
 Config/testthat/edition: 3
+Config/roxygen2/version: 8.1.1

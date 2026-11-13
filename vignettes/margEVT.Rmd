@@ -12,10 +12,14 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6,
                       fig.height = 4, dpi = 72)
 ```
 
-This vignette walks through a complete **margEVT** analysis: penalized
-estimation of a non-homogeneous Poisson point process (NHPP) for
-threshold exceedances, model diagnostics, marginal (covariate-integrated)
-return levels, bootstrap uncertainty, and walk-forward validation.
+This vignette walks through a complete **margEVT** analysis:
+
+1. penalized estimation of a non-homogeneous Poisson point process (NHPP)
+   for threshold exceedances, with covariates in its parameters;
+2. diagnostics;
+3. marginal return levels, which integrate the covariates out;
+4. risk over a planning horizon of several years;
+5. bootstrap uncertainty and walk-forward validation.
 
 ```{r}
 library(margEVT)
@@ -23,29 +27,32 @@ library(margEVT)
 
 ## Model
 
-Exceedances of a threshold $u$ by a series $Y_t$ are modelled as a
-point process with intensity
+Exceedances of a threshold $u$ by a series $Y_t$ are modelled as a point
+process with integrated intensity
 $$
 \Lambda_t\{(y, \infty)\} = \frac{1}{n_y}
   \left[1 + \xi_t \frac{y - \mu_t}{\sigma_t}\right]_+^{-1/\xi_t},
   \qquad y > u,
 $$
 where $n_y$ is the number of observations per year, so that $\mu_t$,
-$\sigma_t$ and $\xi_t$ are the parameters of the annual-maximum GEV
-distribution. Each parameter is linear in covariates
-($\log\sigma_t$ for the scale), and the covariate coefficients are
-estimated by penalized maximum likelihood with an elastic-net penalty
-weighted coordinate-wise; with `penalty_weights = "adaptive"` the
-weights are $1/|\tilde\theta_k|^\gamma$, the adaptive LASSO.
+$\sigma_t$ and $\xi_t$ are the parameters of the generalized extreme value
+(GEV) distribution of the annual maximum. Each parameter is linear in
+covariates ($\log\sigma_t$ for the scale), and the covariate coefficients
+are estimated by penalized maximum likelihood. With
+`penalty_weights = "adaptive"` the penalty is the adaptive LASSO, with
+weights $1/|\tilde\theta_k|^\gamma$ from an unpenalized fit. The shape is
+kept at $\xi_t \ge -1/2$ (`shape_lower`), the region where maximum
+likelihood is regular.
 
-Since $G(z \mid \mathbf{v}) = \exp\{-\sum_t \Lambda_t(z)\}$ is the annual
-non-exceedance probability given one year of covariates $\mathbf{v}$,
-the *marginal* return level for period $T$ solves
+Given one year of covariates $\mathbf{v}$, the annual non-exceedance
+probability is $G(z \mid \mathbf{v}) = \exp\{-\sum_t \Lambda_t(z)\}$. The
+*marginal* return level of period $T$ solves
 $$
 G_\Pi(z_T) = \mathrm{E}_\Pi\{G(z_T \mid \mathbf{V})\} = 1 - 1/T ,
 $$
-where $\Pi$ is a law for annual covariate trajectories: fixed scenarios
-(approach A), a fitted VAR generator (approach B), or resampled observed
+where $\Pi$ is a law for whole years of covariates. margEVT offers three
+choices: fixed scenarios (approach A, which gives *conditional* levels), a
+fitted vector autoregressive generator (approach B), and resampled observed
 years (approach C).
 
 ## Simulated data
@@ -69,14 +76,34 @@ df$y <- 20 + 3 * df$x + 4 * df$cos1 + 3 * rexp(n)
 u <- quantile(df$y, 0.9)
 ```
 
-`seasonal_harmonics()` builds the `cos1`, `sen1`, ... columns with the
-same convention used later when annual covariate blocks are rebuilt.
+`seasonal_harmonics()` builds the `cos1`, `sen1`, ... columns with the same
+convention used later, when annual covariate blocks are rebuilt.
+
+Exceedances of an autocorrelated series come in clusters, which the Poisson
+model does not allow for. `extremal_index()` estimates the extremal index
+$\theta$, the reciprocal of the mean cluster size (1 means no clustering):
+
+```{r ei}
+extremal_index(df$y, u)
+```
+
+With $\hat\theta$ well below 1, we keep only the largest value of each
+cluster. `decluster()` sets the other exceedances to the threshold, so the
+result can be fitted directly; the raw series is kept for validation.
+
+```{r decluster}
+df$y_raw <- df$y
+df$y <- decluster(df$y_raw, u)
+c(exceedances = sum(df$y_raw > u), clusters = sum(df$y > u))
+```
 
 ## Estimation
 
 Harmonics are declared in `free_vars`, so they are never penalized. The
-penalty level is selected by BIC along a regularization path, and the
-reported model is the path solution at the selected penalty.
+penalty level is selected by the Bayesian information criterion (BIC) along
+a regularization path. With `refit = TRUE`, the selected model is refitted
+without penalty (the relaxed LASSO): the penalty only selects covariates,
+and the reported coefficients are free of shrinkage.
 
 ```{r fit}
 fit <- fit_nhpp(df, threshold = u,
@@ -84,7 +111,7 @@ fit <- fit_nhpp(df, threshold = u,
                 scale_vars = c("x", "z"),
                 free_vars  = c("cos1", "sen1"),
                 penalty = "lasso", lambda = "bic",
-                penalty_weights = "adaptive",
+                penalty_weights = "adaptive", refit = TRUE,
                 obs_per_year = n_y, verbose = FALSE)
 fit
 ```
@@ -94,21 +121,20 @@ summary(fit)
 active_covariates(fit)
 ```
 
-Convergence is certified by the Karush-Kuhn-Tucker conditions of the
-penalized problem (`fit$kkt`, the largest violation per exceedance).
-The regularization path and BIC curve are stored in `fit$path`:
+The irrelevant covariate `z` is dropped. The solution is checked against
+the Karush-Kuhn-Tucker conditions of the penalized problem (`fit$kkt`, the
+largest violation per exceedance). The regularization path and the BIC
+curve are stored in `fit$path`:
 
 ```{r path, fig.height = 6}
-head(fit$path$table)
 plot(fit, type = "path")
 ```
 
 ## Diagnostics
 
-The time-rescaling theorem gives interarrival residuals that are
-standard exponential under a correct model; magnitude residuals check
-the fitted generalized Pareto tail. Q-Q plots show exact pointwise
-95\% bands.
+By the time-rescaling theorem, the interarrival residuals are standard
+exponential under a correct model; the magnitude residuals check the fitted
+generalized Pareto tail. The Q-Q plots show exact pointwise 95% bands.
 
 ```{r qq, fig.width = 7, fig.height = 3.5}
 op <- par(mfrow = c(1, 2))
@@ -117,30 +143,33 @@ plot(fit, type = "qq", residuals = "magnitude")
 par(op)
 ```
 
-Standard generics are available: `coef()`, `logLik()`, `AIC()`,
-`BIC()`, `nobs()`, `predict()`, and `residuals()`.
+The usual generics work: `coef()`, `logLik()`, `AIC()`, `BIC()`, `nobs()`,
+`predict()`, `fitted()`, `residuals()`, `simulate()` and `update()`.
+`vcov()` and `confint()` give Wald intervals, conditional on the selected
+model:
 
 ```{r generics}
 logLik(fit)
+confint(fit)
 predict(fit, newdata = data.frame(cos1 = 1, sen1 = 0, x = c(-1, 0, 1),
                                   z = 0))
 ```
 
 ## Marginal return levels
 
-Approach B needs a model for whole years of covariates. The generator
-removes the seasonal cycle, fits a VAR(p) with order selected by the
-Schwarz criterion, and simulates stationary trajectories.
+Approach B needs a model for whole years of covariates.
+`fit_var_generator()` removes the seasonal cycle, fits a VAR(p) with the
+order chosen by the Schwarz criterion, and checks that it is stable;
+`simulate_covariates()` then draws stationary annual trajectories.
 
 ```{r generator}
 gen <- fit_var_generator(fit, df, vars = "x", lag_max = 4)
-gen$p_opt
+gen
 sims <- simulate_covariates(gen, n_mc = 300, seed = 1)
 ```
 
-Approach A evaluates fixed scenarios, B integrates over the simulated
-trajectories, and C resamples observed years. Monte Carlo standard
-errors of the roots are reported for B and C.
+`marginalize()` computes the levels under the three approaches. Monte Carlo
+standard errors of the roots are reported for B and C.
 
 ```{r marginalize}
 rl <- marginalize(fit, df, TRs = c(2, 10, 50, 100),
@@ -152,50 +181,90 @@ rl_table(rl)
 plot(rl)
 ```
 
-Scenario-based levels can be far from the marginal ones: the
-marginal law averages over within-year covariate variability, which a
-single fixed value does not represent.
+A level computed at a fixed covariate value answers a different question
+from the marginal one: it holds the climate index at that value for the
+whole year, while the marginal level averages over the years the index can
+produce. When the covariates also act on the scale, the conditional level
+at the median state tends to fall below the marginal one at long return
+periods, and longer records do not remove the difference, because it comes
+from the definition of the level, not from estimation error.
+
+## Risk over a planning horizon
+
+A return period describes one year. For a structure designed to last $L$
+years, `horizon_risk()` gives the probability that a level is exceeded at
+least once in the horizon, the expected number of years with an exceedance,
+and the expected waiting time. The trajectories can be any annual covariate
+blocks: here, 10 years resampled from the record, 200 times.
+
+```{r horizon}
+years <- unique(df$year)
+traj <- replicate(200, lapply(sample(years, 10, replace = TRUE),
+                              function(yr) df[df$year == yr, "x", drop = FALSE]),
+                  simplify = FALSE)
+hr <- horizon_risk(fit, z = c(40, 45, 50), trajectories = traj)
+hr
+plot(hr)
+```
+
+`design_life_level()` inverts this: it gives the level exceeded with a
+given probability during the horizon (Rootzén and Katz, 2013).
+
+```{r dll}
+design_life_level(fit, traj, prob = c(0.5, 0.1))
+```
+
+Non-stationary scenarios, such as covariates from climate projections or a
+trend that keeps growing, enter in the same way, as trajectories whose years
+differ.
 
 ## Uncertainty
 
-`bootstrap_rl()` refits the selected specification (same penalty
-level and weights) on parametric bootstrap samples and recomputes the
-return levels. Each replicate uses its own L'Ecuyer-CMRG random-number
-stream, so results are identical for any number of `cores`.
+`bootstrap_nhpp()` refits the selected specification (same penalty level
+and weights) on parametric bootstrap samples, and returns percentile
+intervals for the return levels and for every coefficient in one pass. Each
+replicate uses its own L'Ecuyer-CMRG random-number stream, so the results
+do not depend on the number of `cores`.
 
 ```{r bootstrap}
-ci <- bootstrap_rl(fit, df, TRs = c(10, 50), R = 20, approach = "C",
-                   marginalize_args = list(n_boot = 100, seed = 1),
-                   verbose = FALSE)
-ci
+b <- bootstrap_nhpp(fit, df, TRs = c(10, 50), R = 20, approach = "C",
+                    marginalize_args = list(n_boot = 100, seed = 1),
+                    verbose = FALSE)
+b
 ```
 
-The intervals are conditional on the selected model and do not
-include model-selection uncertainty. In applications, use several
-hundred replicates and `cores > 1`.
+The intervals are conditional on the selected model and do not include the
+uncertainty of the selection. In applications, use several hundred
+replicates and `cores > 1`.
 
 ## Walk-forward validation
 
 `backtest()` refits the model on expanding training windows, computes
-return levels from the training years, and compares the observed
-annual maxima of the following years with the nominal exceedance rates.
-Adaptive weights are recomputed inside each window, so no validation
-data enters the training fit; `reselect_lambda = TRUE` also re-selects
-the penalty, and `trend_col` handles a linear time trend.
+return levels from the training years only, and compares the observed
+annual maxima of the following years (of the raw series, `varname`) with
+the nominal exceedance rates. Declustering is redone inside each window,
+on the training years only, and so are the adaptive weights: no validation
+data enter the training fit. `reselect_lambda = TRUE` also re-selects the
+penalty, and `trend_col` handles a linear time trend.
 
 ```{r backtest}
-bt <- backtest(fit, df, varname = "y", TRs = c(2, 5),
+bt <- backtest(fit, df, varname = "y_raw", TRs = c(2, 5),
                window_years = 10, min_train_years = 20, n_boot = 100,
-               verbose = FALSE)
-bt$binom_tests
+               decluster = function(y) decluster(y, u), verbose = FALSE)
+bt
 ```
 
 ## Reproducibility
 
 All stochastic functions accept a `seed` and leave the caller's
-random-number stream unchanged. The full session used here:
+random-number stream unchanged.
 
 ```{r session}
 sessionInfo()$R.version$version.string
 packageVersion("margEVT")
 ```
+
+## References
+
+Rootzén, H. and Katz, R. W. (2013). Design life level: quantifying risk in
+a changing climate. *Water Resources Research*, 49(9), 5964--5972.

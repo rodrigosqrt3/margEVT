@@ -1,3 +1,97 @@
+# margEVT 0.6.0
+
+## Estimation
+
+- `fit_nhpp(refit = TRUE)` refits the model without penalty on the selected
+  set (relaxed LASSO): the penalty only selects, and the reported
+  coefficients are free of the LASSO shrinkage, which in simulations biased
+  marginal return levels downwards by up to about 1.6 percentage points. The
+  penalty is selected exactly as before; the penalized solution is kept in
+  `par_penalized` and the selected set in `active_set`, which the activity
+  checks use even if a refitted coefficient falls below `active_tol`.
+  `refit_nhpp()`, the bootstrap and `backtest()` inherit the setting.
+
+## Return levels and risk
+
+- New `horizon_risk()`: probability of at least one exceedance of a level in
+  a horizon of L years, expected number of years with an exceedance, and
+  expected waiting time, over user-supplied annual covariate trajectories
+  (one scenario or an ensemble).
+- New `design_life_level()` (Rootzen and Katz, 2013): the level exceeded with
+  a given probability during the horizon, with its Monte Carlo standard
+  error. For one year and a stationary covariate law it equals the marginal
+  return level of `marginalize()`.
+- `marginalize()` approach B accepts a named list of ensembles in
+  `mc_sample` (e.g. `list(historical = mc_hist, future = mc_fut)`), giving
+  one set of return levels per scenario, labelled in `scenario`.
+
+## Declustering
+
+- New `extremal_index()`: intervals estimator (Ferro and Segers, 2003) or
+  runs estimator.
+- New `decluster()`: keeps the largest value of each cluster, with the run
+  length estimated by the intervals method or given by the user; the other
+  exceedances are set to the threshold. It can be passed directly as the
+  `decluster` function of `backtest()`. Note that
+  `extRemes::decluster(method = "intervals")` (2.2-1) estimates the run
+  length but declusters with a run length of 1; `decluster()` uses the
+  estimated one.
+
+## Methods
+
+- New `vcov()` and `confint()` methods (Wald, over the active parameters,
+  conditional on the selected model), `fitted()` and `simulate()` (series of
+  exceedances from the fitted model, as in the parametric bootstrap).
+- Fitted objects store their call, so `update()` works.
+- Result objects now have classes with `print` methods: `horizon_risk()`
+  returns an `nhpp_horizon` data frame (also with a `plot` method, the
+  probability of a first exceedance by each year of the horizon),
+  `bootstrap_nhpp()` an `nhpp_boot` list, `backtest()` an `nhpp_backtest`
+  list, and `fit_var_generator()` objects print a short summary instead of
+  their matrices. Data-frame results keep `"data.frame"` as their second
+  class, so column access and indexing are unchanged.
+
+## Performance
+
+- New `fit_nhpp(solver = "newton")`: a proximal Newton solver with the
+  analytical Hessian of the point-process likelihood (compiled), the exact
+  elastic-net penalty and coordinate descent for each penalized quadratic
+  step, as in glmnet. Penalized coefficients reach exact zeros, and an
+  adaptive LASSO path needs about 1,000 likelihood evaluations instead of
+  16,000 (daily case below: 36 s to 7 s; bootstrap refits twice as fast).
+  It falls back to the BFGS solver where it does not apply (Gumbel-limit
+  shapes, a bounded shape with shape covariates) or fails the KKT check.
+  The default stays `"bfgs"`, which reproduces earlier results; both
+  solvers pass the same KKT check and gave the same penalty, active set and
+  return levels in our tests. The setting is stored in the fit and
+  inherited by `refit_nhpp()`, the bootstrap and `backtest()`.
+- Annual covariate blocks for `marginalize()`, `horizon_risk()` and
+  `design_life_level()` are stacked column by column instead of building and
+  row-binding one data frame per year.
+- The likelihood and its gradient, and the pathwise annual probabilities
+  used by every return-level computation, are now compiled C++ kernels
+  (Rcpp). They reproduce the previous R code to rounding error; the R
+  versions are kept as references in the tests.
+- Return levels are found by Newton steps with the analytical derivative,
+  safeguarded by bisection, with the bracket shared and each period started
+  from the previous root, instead of `uniroot()`.
+- Along the BIC path, a warm start that already satisfies the KKT conditions
+  at the next penalty (above lambda_max, where every penalized coefficient
+  is zero) is accepted without running the optimizer.
+- On a daily case with 14,600 observations and 31 parameters, against
+  0.5.0: `fit_nhpp()` with the adaptive LASSO path 71 s to 36 s (BFGS) or
+  7 s (Newton); `marginalize()` 6 times faster; `design_life_level()` 5
+  times; `bootstrap_nhpp()` 2.5 times (5 with Newton refits). With the
+  default solver, the selected penalty, active set, return levels and
+  bootstrap intervals are unchanged.
+
+## Documentation
+
+- The vignette now covers declustering, the unpenalized refit, Wald
+  intervals, risk over a planning horizon, design life levels and the
+  one-pass bootstrap. The README was rewritten around a table of tasks and
+  functions and a shorter, tested quick start.
+
 # margEVT 0.5.0
 
 ## Breaking changes
